@@ -1,2 +1,54 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# FlintRTOS - line-ending policy (portable across Linux / macOS / Windows).
+#
+# The repository canonical form is LF. This overrides a user's
+# core.autocrlf=true, so the "LF will be replaced by CRLF" warning goes away
+# and shell scripts, Makefiles, and the linker script stay LF (CRLF would
+# break them). Windows batch files are the only files checked out as CRLF.
+
+# Default: treat as text, normalise to LF in the repo and on checkout.
+* text=auto eol=lf
+
+# --- Source ---------------------------------------------------------------
+*.c    text eol=lf
+*.h    text eol=lf
+*.cpp  text eol=lf
+*.hpp  text eol=lf
+*.cc   text eol=lf
+*.S    text eol=lf
+*.s    text eol=lf
+*.asm  text eol=lf
+
+# --- Build / config -------------------------------------------------------
+*.ld            text eol=lf
+*.mk            text eol=lf
+Makefile        text eol=lf
+*.cmake         text eol=lf
+CMakeLists.txt  text eol=lf
+*.sh            text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+.clang-format   text eol=lf
+.clang-tidy     text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+.editorconfig   text eol=lf
+
+# --- Windows-only scripts (require CRLF) ----------------------------------
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# --- Binary (never convert) -----------------------------------------------
+*.img  binary
+*.bin  binary
+*.elf  binary
+*.o    binary
+*.a    binary
+*.hex  binary
+*.png  binary
+*.jpg  binary
+*.pdf  binary

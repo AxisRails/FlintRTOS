@@ -1,0 +1,14 @@
+# FlintRTOS static-analysis config (partial MISRA proxy; CERT + CppCoreGuidelines
+# overlap substantial MISRA content). A licensed MISRA checker is authoritative
+# in the production pipeline. See docs/CODING-STANDARD.md.
+Checks: >
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-*,
+  misc-*,
+  readability-*,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-identifier-length
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/flint/.*'
