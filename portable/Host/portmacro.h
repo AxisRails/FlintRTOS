@@ -26,6 +26,7 @@ typedef uint32_t  TickType_t;
 #define portENTER_CRITICAL()      ((void)0)
 #define portEXIT_CRITICAL()       ((void)0)
 #define portYIELD()               ((void)0)
+#define portWAIT_FOR_INTERRUPT()  ((void)0)
 #define portYIELD_FROM_ISR(x)     ((void)(x))
 
 #define portTASK_FUNCTION_PROTO(vFn, pvParams)  void vFn(void *pvParams)

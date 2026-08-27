@@ -22,9 +22,28 @@ ELF      := $(BUILD)/flint.elf
 INCLUDES := -Iinclude -Iinclude/FlintRTOS -Ibsp/rpi4 \
             -Iportable/LLVM_AArch64 -Idemo/rpi4
 
+# lwIP (manifest 3) - enabled by default; build without via `make LWIP=0`.
+# OS mode (netconn/sockets + coreMQTT) via `make LWIP_OS=1`.
+LWIP ?= 1
+LWIP_OS ?= 0
+LWIP_DEFS :=
+LWIP_BUILD_SRCS :=
+ifeq ($(LWIP),1)
+include port/lwip/lwip.mk
+INCLUDES += $(LWIP_INC) -Iport/lwip/netif
+LWIP_BUILD_SRCS := $(LWIP_SRCS)
+ifeq ($(LWIP_OS),1)
+INCLUDES += $(MQTT_INC)
+LWIP_DEFS := -DFLINT_LWIP_OS
+LWIP_BUILD_SRCS += $(LWIP_API) $(MQTT_SRCS) demo/rpi4/net_demo_os.c
+else
+LWIP_BUILD_SRCS += demo/rpi4/net_demo.c
+endif
+endif
+
 CFLAGS   := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding -nostdlib \
             -mgeneral-regs-only -fno-stack-protector -fno-common -fno-builtin \
-            -O2 -Wall -Wextra -Wshadow -std=c11 $(INCLUDES)
+            -O2 -Wall -Wextra -Wshadow -std=c11 -DconfigUSE_LWIP=$(LWIP) $(LWIP_DEFS) $(INCLUDES)
 ASFLAGS  := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding $(INCLUDES)
 LDFLAGS  := -T boot/rpi4/linker.ld -nostdlib --gc-sections
 
@@ -40,6 +59,10 @@ C_SRCS := \
     portable/MemMang/heap_4.c \
     demo/rpi4/main.c
 
+ifeq ($(LWIP),1)
+C_SRCS += $(LWIP_BUILD_SRCS)
+endif
+
 S_SRCS := \
     boot/rpi4/start.S \
     portable/LLVM_AArch64/vectors.S \
@@ -49,6 +72,11 @@ OBJS := $(patsubst %,$(BUILD)/%.o,$(C_SRCS) $(S_SRCS))
 
 .PHONY: all clean qemu disasm
 all: $(IMG)
+
+# Vendored third-party code (lwIP): suppress warnings, keep our code strict.
+$(BUILD)/third_party/%.c.o: third_party/%.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(CFLAGS) -w -c $< -o $@
 
 $(BUILD)/%.c.o: %.c
 	@mkdir -p $(dir $@)
@@ -73,5 +101,5 @@ qemu: $(IMG)
 	qemu-system-aarch64 -M raspi4b -kernel $(IMG) -serial stdio -display none
 
 clean:
-	rm -rf $(BUILD)/boot $(BUILD)/bsp $(BUILD)/demo $(BUILD)/portable \
+	rm -rf $(BUILD)
 	       $(BUILD)/kernel $(ELF) $(IMG)

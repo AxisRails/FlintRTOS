@@ -19,6 +19,8 @@ typedef void *QueueHandle_t;
 
 QueueHandle_t xQueueCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize);
 void          vQueueDelete(QueueHandle_t xQueue);
+QueueHandle_t xQueueCreateCounting(UBaseType_t uxMaxCount, UBaseType_t uxInitialCount);
+QueueHandle_t xQueueCreateMutex(void);
 
 /* Non-blocking send/receive (xTicksToWait honoured once blocking lands). */
 BaseType_t    xQueueSendToBack(QueueHandle_t xQueue, const void *pvItemToQueue,

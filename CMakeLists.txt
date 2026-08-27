@@ -29,8 +29,10 @@ target_compile_options(flint_kernel PRIVATE ${FLINT_C_WARNINGS})
 # the portable logic can be tested natively.
 add_library(flint_core_host STATIC
     kernel/list.c
+    kernel/tasks.c
+    kernel/queue.c
     portable/MemMang/heap_4.c
-    kernel/queue.c)
+    tests/host_port_stubs.c)
 target_include_directories(flint_core_host PUBLIC
     ${CMAKE_SOURCE_DIR}/include/FlintRTOS
     ${CMAKE_SOURCE_DIR}/portable/Host
@@ -46,7 +48,8 @@ add_executable(flint_tests
     tests/test_cap.cpp
     tests/test_list.cpp
     tests/test_heap.cpp
-    tests/test_queue.cpp)
+    tests/test_queue.cpp
+    tests/test_semaphore.cpp)
 target_include_directories(flint_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
 target_compile_options(flint_tests PRIVATE ${FLINT_CXX_WARNINGS})

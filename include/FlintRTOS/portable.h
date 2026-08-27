@@ -21,6 +21,7 @@ struct tskTaskControlBlock; /* fwd */
 StackType_t *pxPortInitialiseStack(StackType_t *pxTopOfStack,
                                    void (*pxCode)(void *), void *pvParameters);
 BaseType_t xPortStartScheduler(void);
+void       vPortTaskExit(void);
 void       vPortSetupTimerInterrupt(void);
 
 #endif /* FLINT_PORTABLE_H */

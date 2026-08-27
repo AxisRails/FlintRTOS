@@ -44,6 +44,8 @@ void vPortExitCritical(void);
 #define portENTER_CRITICAL()  vPortEnterCritical()
 #define portEXIT_CRITICAL()   vPortExitCritical()
 
+#define portWAIT_FOR_INTERRUPT()  __asm__ volatile("wfi")
+
 /* --- Yield ---------------------------------------------------------------- */
 /* Request a context switch via a synchronous supervisor call (handled in
    portASM.S). Used by taskYIELD() and from ISRs that unblock a higher task. */

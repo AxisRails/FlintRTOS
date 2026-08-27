@@ -49,7 +49,10 @@
 #define configUSE_MALLOC_FAILED_HOOK   1
 
 /* ---- Ecosystem libraries (manifest 3) - integrated when present -----------*/
-#define configUSE_LWIP                 0   /* FlintRTOS+LwIP TCP/IP           */
+/* configUSE_LWIP may be overridden by the build (make LWIP=0/1) via -D. */
+#ifndef configUSE_LWIP
+#define configUSE_LWIP                 1   /* FlintRTOS+LwIP TCP/IP (NO_SYS)  */
+#endif
 #define configUSE_CLI                  0   /* FlintRTOS-CLI over UART         */
 #define configUSE_CORE_MQTT            0   /* coreMQTT client                */
 #define configUSE_CORE_HTTP            0   /* coreHTTP client                */

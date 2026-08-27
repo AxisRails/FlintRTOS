@@ -28,6 +28,10 @@ void        vTaskStartScheduler(void);
 void        vTaskDelay(TickType_t xTicksToDelay);
 void        vTaskSwitchContext(void);          /* called from the port ISR */
 void        xTaskIncrementTick(void);          /* called from the tick ISR */
+
+/* Event-list blocking - used by queues/semaphores (queue.c). */
+void        vTaskPlaceOnEventList(List_t *pxEventList, TickType_t xTicksToWait);
+BaseType_t  xTaskRemoveFromEventList(List_t *pxEventList);
 UBaseType_t uxTaskGetNumberOfTasks(void);
 TickType_t  xTaskGetTickCount(void);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);

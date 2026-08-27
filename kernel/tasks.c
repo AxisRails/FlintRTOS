@@ -1,12 +1,12 @@
 /*
  * FlintRTOS - Task Management (manifest 1). TCB code (MISRA C:2023).
  *
- * Fixed-priority preemptive scheduler with per-priority ready lists and a
- * single delayed list for vTaskDelay. Context switching is delegated to the
- * architecture port (pxPortInitialiseStack / xPortStartScheduler / vPortYield).
+ * Fixed-priority preemptive scheduler with per-priority ready lists, a delayed
+ * list (timed blocking), a suspended list (indefinite blocking), and event-list
+ * blocking used by queues/semaphores (vTaskPlaceOnEventList /
+ * xTaskRemoveFromEventList). Context switching is delegated to the port.
  *
- * Build-verified for AArch64; on-target runtime bring-up pending (verify the
- * port context switch on hardware/QEMU first).
+ * Build-verified for AArch64; on-target runtime bring-up pending.
  */
 #include "task.h"
 #include "list.h"
@@ -14,29 +14,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* pxTopOfStack MUST be the first member: the port's asm saves/restores SP
-   through *pxCurrentTCB (see portASM.S). */
+/* pxTopOfStack MUST be first: the port asm saves/restores SP via *pxCurrentTCB. */
 struct tskTaskControlBlock
 {
     volatile StackType_t *pxTopOfStack;
-    ListItem_t            xStateListItem;   /* links into a ready/delayed list */
+    ListItem_t            xStateListItem;   /* ready / delayed / suspended list */
+    ListItem_t            xEventListItem;   /* a queue's waiting list           */
     UBaseType_t           uxPriority;
-    StackType_t          *pxStack;          /* base of the allocated stack     */
+    StackType_t          *pxStack;
     char                  pcTaskName[configMAX_TASK_NAME_LEN];
 };
 
-/* Exposed to the port asm. */
-volatile TCB_t *volatile pxCurrentTCB = NULL;
+TCB_t *volatile pxCurrentTCB = NULL;
 
-/* Scheduler state. */
 static List_t     xReadyTasksLists[configMAX_PRIORITIES];
-static List_t     xDelayedTaskList;
+static List_t     xDelayedTaskList;         /* tasks blocked with a timeout      */
+static List_t     xSuspendedTaskList;       /* tasks blocked indefinitely        */
 static volatile UBaseType_t uxTopReadyPriority = 0U;
 static volatile TickType_t  xTickCount        = 0U;
 static volatile UBaseType_t uxCurrentNumberOfTasks = 0U;
 static volatile BaseType_t  xSchedulerRunning = pdFALSE;
-
-extern void vPortStartFirstTask(void); /* portASM.S */
 
 static void prvIdleTask(void *pvParameters);
 static void prvInitialiseTaskLists(void);
@@ -68,7 +65,6 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
         uxPriority = (UBaseType_t)configMAX_PRIORITIES - 1U;
     }
 
-    /* Initialise the scheduler lists on first use. */
     {
         static BaseType_t xListsInitialised = pdFALSE;
         if (xListsInitialised == pdFALSE)
@@ -83,7 +79,6 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
     {
         return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     }
-
     pxNewTCB = (TCB_t *)pvPortMalloc(sizeof(TCB_t));
     if (pxNewTCB == NULL)
     {
@@ -91,25 +86,26 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
         return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     }
 
-    pxNewTCB->pxStack     = pxStack;
-    pxNewTCB->uxPriority  = uxPriority;
+    pxNewTCB->pxStack    = pxStack;
+    pxNewTCB->uxPriority = uxPriority;
     for (ux = 0U; ux < (UBaseType_t)configMAX_TASK_NAME_LEN; ux++)
     {
         char c = (pcName != NULL) ? pcName[ux] : '\0';
         pxNewTCB->pcTaskName[ux] = c;
-        if (c == '\0')
-        {
-            break;
-        }
+        if (c == '\0') { break; }
     }
     pxNewTCB->pcTaskName[configMAX_TASK_NAME_LEN - 1] = '\0';
 
     vListInitialiseItem(&(pxNewTCB->xStateListItem));
+    vListInitialiseItem(&(pxNewTCB->xEventListItem));
+    listSET_LIST_ITEM_OWNER(&(pxNewTCB->xStateListItem), pxNewTCB);
+    listSET_LIST_ITEM_OWNER(&(pxNewTCB->xEventListItem), pxNewTCB);
+    /* Event lists order by priority: highest priority == lowest item value. */
+    listSET_LIST_ITEM_VALUE(&(pxNewTCB->xEventListItem),
+                            (TickType_t)((UBaseType_t)configMAX_PRIORITIES - uxPriority));
 
-    /* Top of a full-descending stack, 16-byte aligned. */
     {
-        StackType_t *pxTopOfStack =
-            &(pxStack[usStackDepth - 1U]);
+        StackType_t *pxTopOfStack = &(pxStack[usStackDepth - 1U]);
         pxTopOfStack = (StackType_t *)(((uintptr_t)pxTopOfStack) &
                                        ~((uintptr_t)portBYTE_ALIGNMENT_MASK));
         pxNewTCB->pxTopOfStack =
@@ -119,18 +115,12 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
     taskENTER_CRITICAL();
     {
         uxCurrentNumberOfTasks++;
-        if (pxCurrentTCB == NULL)
-        {
-            pxCurrentTCB = pxNewTCB;   /* first task becomes current */
-        }
+        if (pxCurrentTCB == NULL) { pxCurrentTCB = pxNewTCB; }
         prvAddTaskToReadyList(pxNewTCB);
     }
     taskEXIT_CRITICAL();
 
-    if (pxCreatedTask != NULL)
-    {
-        *pxCreatedTask = (TaskHandle_t)pxNewTCB;
-    }
+    if (pxCreatedTask != NULL) { *pxCreatedTask = (TaskHandle_t)pxNewTCB; }
     return pdPASS;
 }
 
@@ -142,6 +132,7 @@ static void prvInitialiseTaskLists(void)
         vListInitialise(&(xReadyTasksLists[ux]));
     }
     vListInitialise(&xDelayedTaskList);
+    vListInitialise(&xSuspendedTaskList);
 }
 
 void vTaskStartScheduler(void)
@@ -149,29 +140,21 @@ void vTaskStartScheduler(void)
     TaskHandle_t xIdle;
     (void)xTaskCreate(prvIdleTask, "IDLE", (uint32_t)configMINIMAL_STACK_SIZE,
                       NULL, 0U, &xIdle);
-
     xSchedulerRunning = pdTRUE;
     xTickCount = 0U;
-
     vPortSetupTimerInterrupt();
     (void)xPortStartScheduler();   /* starts first task; does not return */
 }
 
-/* Select the highest-priority ready task as the current task. */
 void vTaskSwitchContext(void)
 {
     UBaseType_t uxPriority = uxTopReadyPriority;
-
     while (listLIST_IS_EMPTY(&(xReadyTasksLists[uxPriority])) != pdFALSE)
     {
-        if (uxPriority == 0U)
-        {
-            break;   /* the idle task is always at priority 0 */
-        }
+        if (uxPriority == 0U) { break; }
         uxPriority--;
     }
     uxTopReadyPriority = uxPriority;
-
     {
         void *pxOwner = NULL;
         listGET_OWNER_OF_NEXT_ENTRY(pxOwner, &(xReadyTasksLists[uxPriority]));
@@ -179,23 +162,72 @@ void vTaskSwitchContext(void)
     }
 }
 
+/* Block the current task on an event list (used by queues/semaphores). */
+void vTaskPlaceOnEventList(List_t *pxEventList, TickType_t xTicksToWait)
+{
+    TCB_t *pxTCB = (TCB_t *)pxCurrentTCB;
+
+    /* Remove from the ready list. */
+    (void)uxListRemove(&(pxTCB->xStateListItem));
+
+    /* Ordered insert into the event list (by priority). */
+    vListInsert(pxEventList, &(pxTCB->xEventListItem));
+
+    /* Track timeout: delayed list if finite, suspended list if indefinite. */
+    if (xTicksToWait == portMAX_DELAY)
+    {
+        vListInsertEnd(&xSuspendedTaskList, &(pxTCB->xStateListItem));
+    }
+    else
+    {
+        listSET_LIST_ITEM_VALUE(&(pxTCB->xStateListItem), xTickCount + xTicksToWait);
+        vListInsert(&xDelayedTaskList, &(pxTCB->xStateListItem));
+    }
+}
+
+/* Wake the highest-priority task waiting on an event list. Returns pdTRUE if
+   the woken task has higher priority than the current one (caller should yield). */
+BaseType_t xTaskRemoveFromEventList(List_t *pxEventList)
+{
+    TCB_t     *pxTCB;
+    BaseType_t xShouldYield = pdFALSE;
+
+    if (listLIST_IS_EMPTY(pxEventList) != pdFALSE)
+    {
+        return pdFALSE;
+    }
+
+    pxTCB = (TCB_t *)listGET_LIST_ITEM_OWNER(listGET_HEAD_ENTRY(pxEventList));
+    (void)uxListRemove(&(pxTCB->xEventListItem));     /* off the event list   */
+    (void)uxListRemove(&(pxTCB->xStateListItem));     /* off delayed/suspended */
+    prvAddTaskToReadyList(pxTCB);                     /* make it runnable      */
+
+    if (pxTCB->uxPriority > ((TCB_t *)pxCurrentTCB)->uxPriority)
+    {
+        xShouldYield = pdTRUE;
+    }
+    return xShouldYield;
+}
+
 void xTaskIncrementTick(void)
 {
     xTickCount++;
 
-    /* Wake any delayed tasks whose deadline has arrived. */
     while (listLIST_IS_EMPTY(&xDelayedTaskList) == pdFALSE)
     {
         ListItem_t *pxItem   = listGET_HEAD_ENTRY(&xDelayedTaskList);
         TickType_t  xItemVal = listGET_LIST_ITEM_VALUE(pxItem);
         TCB_t      *pxTCB;
 
-        if (xItemVal > xTickCount)
-        {
-            break;
-        }
+        if (xItemVal > xTickCount) { break; }
+
         pxTCB = (TCB_t *)listGET_LIST_ITEM_OWNER(pxItem);
-        (void)uxListRemove(pxItem);
+        (void)uxListRemove(&(pxTCB->xStateListItem));
+        /* If it was also waiting on an event, remove it from that list. */
+        if (listGET_LIST_ITEM_CONTAINER(&(pxTCB->xEventListItem)) != NULL)
+        {
+            (void)uxListRemove(&(pxTCB->xEventListItem));
+        }
         prvAddTaskToReadyList(pxTCB);
     }
 }
@@ -205,7 +237,6 @@ void vTaskDelay(TickType_t xTicksToDelay)
     if (xTicksToDelay > 0U)
     {
         TCB_t *pxTCB = (TCB_t *)pxCurrentTCB;
-
         taskENTER_CRITICAL();
         {
             (void)uxListRemove(&(pxTCB->xStateListItem));
@@ -213,37 +244,22 @@ void vTaskDelay(TickType_t xTicksToDelay)
             vListInsert(&xDelayedTaskList, &(pxTCB->xStateListItem));
         }
         taskEXIT_CRITICAL();
-
         taskYIELD();
     }
 }
 
-UBaseType_t uxTaskGetNumberOfTasks(void) { return uxCurrentNumberOfTasks; }
-TickType_t  xTaskGetTickCount(void)      { return xTickCount; }
+UBaseType_t uxTaskGetNumberOfTasks(void)     { return uxCurrentNumberOfTasks; }
+TickType_t  xTaskGetTickCount(void)          { return xTickCount; }
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (TaskHandle_t)pxCurrentTCB; }
 
-/* Idle task: runs when nothing else is ready. */
 static void prvIdleTask(void *pvParameters)
 {
     (void)pvParameters;
-    for (;;)
-    {
-        __asm__ volatile("wfi");   /* low-power wait for the next interrupt */
-    }
+    for (;;) { portWAIT_FOR_INTERRUPT(); }
 }
 
-/* Reached if a task function returns. Contain it rather than crash. */
 void vPortTaskExit(void)
 {
     taskDISABLE_INTERRUPTS();
-    for (;;)
-    {
-        __asm__ volatile("wfe");
-    }
-}
-
-/* Called once before the scheduler starts (from vTaskStartScheduler path). */
-void vTaskInitialise(void)
-{
-    prvInitialiseTaskLists();
+    for (;;) { portWAIT_FOR_INTERRUPT(); }
 }

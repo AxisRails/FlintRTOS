@@ -7,6 +7,12 @@
 #include "task.h"
 #include "uart.h"
 
+#if defined(FLINT_LWIP_OS)
+extern void vNetworkTaskOS(void *pvParameters);
+#elif (configUSE_LWIP == 1)
+extern void vNetworkTask(void *pvParameters);
+#endif
+
 static void vTaskA(void *pvParameters)
 {
     (void)pvParameters;
@@ -36,6 +42,12 @@ int main(void)
     uart_printf("[main] creating tasks...\n");
     (void)xTaskCreate(vTaskA, "A", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
     (void)xTaskCreate(vTaskB, "B", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
+
+#if defined(FLINT_LWIP_OS)
+    (void)xTaskCreate(vNetworkTaskOS, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 8U), NULL, 3U, NULL);
+#elif (configUSE_LWIP == 1)
+    (void)xTaskCreate(vNetworkTask, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 4U), NULL, 3U, NULL);
+#endif
 
     uart_printf("[main] starting scheduler with %u task(s)...\n",
                 (unsigned int)uxTaskGetNumberOfTasks());
