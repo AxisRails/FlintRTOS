@@ -143,13 +143,27 @@ v2.3.1** (vendored under `third_party/coreMQTT/`) runs over a lwIP-sockets trans
 (`port/mqtt/transport_lwip.c`). `demo/rpi4/net_demo_os.c` brings up the tcpip thread, DHCP, and an
 MQTT publish to `flint/status`. The full chain **compiles and links** into a 193 KB image.
 
+### PTP / IEEE 1588 (time sync)
+
+`configUSE_PTP` (OS mode) adds an **IEEE-1588 ordinary-clock slave**
+(`port/ptp/`). Rather than port the POSIX-only **ptpd** daemon (vendored under
+`third_party/ptpd/` for reference), FlintRTOS **reuses ptpd's OS-independent
+IEEE-1588 core** — its exact wire structures, constants, and `def/` field
+definitions (`ptp_datatypes.h` et al., which compile bare-metal) and its time
+arithmetic — and supplies a FlintRTOS `dep/` layer: UDP over lwIP (event 319 /
+general 320, multicast 224.0.1.129 via IGMP), an integer PI servo, and a clock
+disciplined from the ARM generic-timer counter. `ptp_slave.c` runs the
+Sync/Follow_Up/Delay_Req/Delay_Resp exchange, computes offset & mean-path-delay,
+and steps the clock (software timestamps; GENET hardware timestamps are the
+accuracy upgrade). Compiles and links into the OS-mode image.
+
 Build matrix (all verified to link):
 
 | Build | Image | Contents |
 |---|---|---|
 | `make LWIP=0` | ~9 KB | kernel + scheduler only |
-| `make` | ~139 KB | + lwIP NO_SYS + GENET (UDP echo) |
-| `make LWIP_OS=1` | ~193 KB | + netconn/sockets + coreMQTT |
+| `make` | ~144 KB | + lwIP NO_SYS + GENET (UDP echo) |
+| `make LWIP_OS=1` | ~202 KB | + netconn/sockets + coreMQTT + PTP slave |
 
 **Next (hardware):** validate the GENET driver on a real Pi (then packets move and the UDP echo /
 MQTT publish are live); add TLS (mbedTLS) under the coreMQTT transport for secure MQTT.

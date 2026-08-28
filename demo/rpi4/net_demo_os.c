@@ -20,6 +20,9 @@
 #include "lwip/dhcp.h"
 #include "flint_netif.h"
 
+#if (configUSE_PTP == 1)
+#include "ptp_slave.h"
+#endif
 #include "core_mqtt.h"
 #include "transport_lwip.h"
 
@@ -123,6 +126,10 @@ void vNetworkTaskOS(void *pvParameters)
         UNLOCK_TCPIP_CORE();
     }
 
+#if (configUSE_PTP == 1)
+    (void)xTaskCreate(vPtpTask, "ptp", (uint32_t)(configMINIMAL_STACK_SIZE * 4U), NULL, 6U, NULL);
+    uart_printf("[net-os] PTP slave task started\n");
+#endif
     uart_printf("[net-os] tcpip up; DHCP started; starting MQTT client...\n");
     mqtt_demo();
 

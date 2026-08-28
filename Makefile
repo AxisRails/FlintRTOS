@@ -33,9 +33,9 @@ include port/lwip/lwip.mk
 INCLUDES += $(LWIP_INC) -Iport/lwip/netif
 LWIP_BUILD_SRCS := $(LWIP_SRCS)
 ifeq ($(LWIP_OS),1)
-INCLUDES += $(MQTT_INC)
+INCLUDES += $(MQTT_INC) $(PTP_INC)
 LWIP_DEFS := -DFLINT_LWIP_OS
-LWIP_BUILD_SRCS += $(LWIP_API) $(MQTT_SRCS) demo/rpi4/net_demo_os.c
+LWIP_BUILD_SRCS += $(LWIP_API) $(MQTT_SRCS) $(PTP_SRCS) demo/rpi4/net_demo_os.c
 else
 LWIP_BUILD_SRCS += demo/rpi4/net_demo.c
 endif

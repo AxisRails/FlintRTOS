@@ -56,6 +56,8 @@
 #define configUSE_CLI                  0   /* FlintRTOS-CLI over UART         */
 #define configUSE_CORE_MQTT            0   /* coreMQTT client                */
 #define configUSE_CORE_HTTP            0   /* coreHTTP client                */
-#define configUSE_PTP                  0   /* IEEE 1588 PTP                  */
+#ifndef configUSE_PTP
+#define configUSE_PTP                  1   /* IEEE 1588 PTP slave (OS mode)   */
+#endif
 
 #endif /* FLINTRTOS_CONFIG_H */

@@ -63,7 +63,7 @@
 #define LWIP_DHCP                   1
 #define LWIP_AUTOIP                 0
 #define LWIP_ACD                    1
-#define LWIP_IGMP                   0
+#define LWIP_IGMP                   1   /* PTP multicast */
 #define LWIP_IPV6_MLD               0
 #define LWIP_DNS                    1
 

@@ -73,3 +73,13 @@ MQTT_SRCS := \
     $(MQTT_DIR)/core_mqtt_serializer.c \
     $(MQTT_DIR)/core_mqtt_state.c \
     port/mqtt/transport_lwip.c
+
+# PTP (manifest 3) - IEEE 1588 ordinary-clock slave. Reuses ptpd's data model
+# (third_party/ptpd) with a FlintRTOS dep layer. OS mode only (sockets).
+PTP_INC := -Ithird_party/ptpd/src -Iport/ptp
+PTP_SRCS := \
+    port/ptp/ptp_time.c \
+    port/ptp/ptp_msg.c \
+    port/ptp/ptp_servo.c \
+    port/ptp/ptp_clock.c \
+    port/ptp/ptp_slave.c
