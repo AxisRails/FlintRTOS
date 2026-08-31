@@ -14,6 +14,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Bring-up scheduler trace: bounded so it cannot flood the console. Enabled
+ * only for the firmware build (Makefile passes -DFLINT_SCHED_TRACE=1); the host
+ * unit-test build leaves it off so tasks.c needs no UART. */
+#ifndef FLINT_SCHED_TRACE
+#define FLINT_SCHED_TRACE 0
+#endif
+#define FLINT_TRACE_MAX   40U
+#if (FLINT_SCHED_TRACE == 1)
+#include "uart.h"
+#endif
+
 /* pxTopOfStack MUST be first: the port asm saves/restores SP via *pxCurrentTCB. */
 struct tskTaskControlBlock
 {
@@ -142,6 +153,12 @@ void vTaskStartScheduler(void)
                       NULL, 0U, &xIdle);
     xSchedulerRunning = pdTRUE;
     xTickCount = 0U;
+#if (FLINT_SCHED_TRACE == 1)
+    uart_printf("[sched] first task = '%s' (pxCurrentTCB=%p), %u tasks ready\n",
+                (pxCurrentTCB != NULL) ? pxCurrentTCB->pcTaskName : "<null>",
+                (void *)pxCurrentTCB, (unsigned int)uxCurrentNumberOfTasks);
+    uart_printf("[sched] uxTopReadyPriority=%u\n", (unsigned int)uxTopReadyPriority);
+#endif
     vPortSetupTimerInterrupt();
     (void)xPortStartScheduler();   /* starts first task; does not return */
 }
@@ -160,6 +177,22 @@ void vTaskSwitchContext(void)
         listGET_OWNER_OF_NEXT_ENTRY(pxOwner, &(xReadyTasksLists[uxPriority]));
         pxCurrentTCB = (TCB_t *)pxOwner;
     }
+#if (FLINT_SCHED_TRACE == 1)
+    {
+        /* Small cap: the switch runs every tick, and its UART print is slower
+         * than the tick, so tracing many would starve the tasks. A handful
+         * proves round-robin selection; then it goes quiet. */
+        static UBaseType_t uxSwTrace = 0U;
+        if (uxSwTrace < 6U)
+        {
+            uxSwTrace++;
+            uart_printf("[switch #%u] prio=%u -> '%s' (ready len=%u)\n",
+                        (unsigned int)uxSwTrace, (unsigned int)uxPriority,
+                        (pxCurrentTCB != NULL) ? pxCurrentTCB->pcTaskName : "<null>",
+                        (unsigned int)listCURRENT_LIST_LENGTH(&(xReadyTasksLists[uxPriority])));
+        }
+    }
+#endif
 }
 
 /* Block the current task on an event list (used by queues/semaphores). */
@@ -229,6 +262,18 @@ void xTaskIncrementTick(void)
             (void)uxListRemove(&(pxTCB->xEventListItem));
         }
         prvAddTaskToReadyList(pxTCB);
+#if (FLINT_SCHED_TRACE == 1)
+        {
+            static UBaseType_t uxWakeTrace = 0U;
+            if (uxWakeTrace < FLINT_TRACE_MAX)
+            {
+                uxWakeTrace++;
+                uart_printf("[wake #%u] '%s' ready at tick=%u\n",
+                            (unsigned int)uxWakeTrace, pxTCB->pcTaskName,
+                            (unsigned int)xTickCount);
+            }
+        }
+#endif
     }
 }
 
@@ -244,6 +289,20 @@ void vTaskDelay(TickType_t xTicksToDelay)
             vListInsert(&xDelayedTaskList, &(pxTCB->xStateListItem));
         }
         taskEXIT_CRITICAL();
+#if (FLINT_SCHED_TRACE == 1)
+        {
+            static UBaseType_t uxDelayTrace = 0U;
+            if (uxDelayTrace < FLINT_TRACE_MAX)
+            {
+                uxDelayTrace++;
+                uart_printf("[delay #%u] '%s' sleeps %u ticks (wake@%u, now=%u); yielding\n",
+                            (unsigned int)uxDelayTrace, pxTCB->pcTaskName,
+                            (unsigned int)xTicksToDelay,
+                            (unsigned int)(xTickCount + xTicksToDelay),
+                            (unsigned int)xTickCount);
+            }
+        }
+#endif
         taskYIELD();
     }
 }

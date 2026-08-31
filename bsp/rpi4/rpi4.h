@@ -29,6 +29,16 @@
 #define UART0_FR_TXFF         (1UL << 5)
 #define UART0_FR_RXFE         (1UL << 4)
 
+/* AUX / mini-UART (UART1). On a Pi 4 without a device tree, `enable_uart=1`
+ * leaves the *mini-UART* (not PL011) on the GPIO14/15 header pins. During
+ * bring-up we emit debug on BOTH so output appears whichever the firmware
+ * routed. These are read/written only with the routing the firmware set up. */
+#define AUX_BASE              (BCM2711_PERIPH_BASE + 0x215000UL)
+#define AUX_ENABLES           (AUX_BASE + 0x04UL)
+#define AUX_MU_IO             (AUX_BASE + 0x40UL)
+#define AUX_MU_LSR            (AUX_BASE + 0x54UL)
+#define AUX_MU_LSR_TXRDY      (1UL << 5)   /* TX FIFO can accept a byte */
+
 /* GIC-400 (GICv2) */
 #define GICD_BASE             (0xFF841000UL)  /* Distributor    */
 #define GICC_BASE             (0xFF842000UL)  /* CPU interface  */

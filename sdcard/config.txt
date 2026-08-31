@@ -1,0 +1,19 @@
+# FlintRTOS - Raspberry Pi 4 (BCM2711) boot configuration.
+# Copy this file, kernel8.img, start4.elf and fixup4.dat to the FAT32 boot
+# partition of the SD card.
+
+# Boot the 64-bit AArch64 kernel image produced by `make LWIP=0`.
+arm_64bit=1
+kernel=kernel8.img
+
+# Enable the UART on GPIO14 (TXD) / GPIO15 (RXD).
+# NOTE: we intentionally do NOT use `dtoverlay=disable-bt` here. A dtoverlay
+# makes start4.elf require a base device tree AND overlays/disable-bt.dtbo on
+# the card; with neither present the firmware halts right after "Starting
+# start4.elf" and never loads the kernel. Without the overlay the firmware puts
+# the mini-UART (UART1) on the header pins - and the FlintRTOS bring-up build
+# drives BOTH the PL011 and the mini-UART, so the console works either way.
+enable_uart=1
+
+# Make the GPU firmware print its own boot log over the UART (diagnostics).
+uart_2ndstage=1

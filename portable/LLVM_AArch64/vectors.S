@@ -54,5 +54,13 @@ flint_vectors:
     .balign 4
     .global flint_trap
 flint_trap:
+    /* Gather the fault syndrome and report it once, then halt. Uses the
+     * current SP (valid for the SPx group we run in) to call C. */
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    mrs     x2, far_el1
+    mrs     x3, spsr_el1
+    bl      flint_trap_report
+flint_trap_halt:
     wfe
-    b       flint_trap
+    b       flint_trap_halt

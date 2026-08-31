@@ -39,9 +39,15 @@ static void vTaskB(void *pvParameters)
 
 int main(void)
 {
-    uart_printf("[main] creating tasks...\n");
-    (void)xTaskCreate(vTaskA, "A", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
-    (void)xTaskCreate(vTaskB, "B", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
+    BaseType_t rc;
+
+    uart_printf("[main] creating task A...\n");
+    rc = xTaskCreate(vTaskA, "A", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
+    uart_printf("[main]   xTaskCreate(A) -> %d\n", (int)rc);
+
+    uart_printf("[main] creating task B...\n");
+    rc = xTaskCreate(vTaskB, "B", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
+    uart_printf("[main]   xTaskCreate(B) -> %d\n", (int)rc);
 
 #if defined(FLINT_LWIP_OS)
     (void)xTaskCreate(vNetworkTaskOS, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 8U), NULL, 3U, NULL);
@@ -51,8 +57,11 @@ int main(void)
 
     uart_printf("[main] starting scheduler with %u task(s)...\n",
                 (unsigned int)uxTaskGetNumberOfTasks());
+    uart_printf("[main] calling vTaskStartScheduler() (enables timer IRQ + first switch)\n");
 
     vTaskStartScheduler();   /* does not return */
+
+    uart_printf("[main] ERROR: vTaskStartScheduler() returned!\n");
 
     for (;;)
     {
