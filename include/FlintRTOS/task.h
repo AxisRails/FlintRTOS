@@ -36,6 +36,11 @@ UBaseType_t uxTaskGetNumberOfTasks(void);
 TickType_t  xTaskGetTickCount(void);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
 
+/* Application hook invoked when a task stack overflow is detected (enabled by
+ * configCHECK_FOR_STACK_OVERFLOW). The application must provide this; it should
+ * report and halt. */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName);
+
 #define taskYIELD()                 portYIELD()
 #define taskENTER_CRITICAL()        portENTER_CRITICAL()
 #define taskEXIT_CRITICAL()         portEXIT_CRITICAL()

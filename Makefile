@@ -41,9 +41,11 @@ LWIP_BUILD_SRCS += demo/rpi4/net_demo.c
 endif
 endif
 
+SCHED_TRACE ?= 0
+
 CFLAGS   := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding -nostdlib \
             -mgeneral-regs-only -fno-stack-protector -fno-common -fno-builtin \
-            -O2 -Wall -Wextra -Wshadow -std=c11 -DconfigUSE_LWIP=$(LWIP) -DFLINT_SCHED_TRACE=1 $(LWIP_DEFS) $(INCLUDES)
+            -O2 -Wall -Wextra -Wshadow -std=c11 -DconfigUSE_LWIP=$(LWIP) -DFLINT_SCHED_TRACE=$(SCHED_TRACE) $(LWIP_DEFS) $(INCLUDES)
 ASFLAGS  := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding $(INCLUDES)
 LDFLAGS  := -T boot/rpi4/linker.ld -nostdlib --gc-sections
 

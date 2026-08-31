@@ -85,18 +85,26 @@ libraries in or out (pay-for-what-you-use).
 
 | Module | Status |
 |---|---|
-| Boot + PL011 UART + AArch64 port skeleton | build-verified (image boots on QEMU/HW — runtime bring-up is the next on-target step) |
-| List Management (`list.c`) | implemented + host-tested |
+| Boot + UART console + AArch64 port | **runs on real Raspberry Pi 4 hardware** ✅ (EL2→EL1, UART, GIC-400, generic timer) |
+| List Management (`list.c`) | implemented + host-tested + running on HW |
 | Queue Management (`queue.c`) | core FIFO implemented + host-tested; blocking wires to tasks next |
-| Task Management (`tasks.c`) + context switch | implemented, build-verified; **first on-target task: verify the context switch** |
-| MemMang `heap_4` | implemented + host-tested; `heap_1`/`heap_3` implemented; `heap_2`/`heap_5` skeletons |
+| Task Management (`tasks.c`) + context switch | **validated on HW** ✅ — preemptive scheduling, `vTaskDelay` blocking, delayed-list wakeup, and context switch all confirmed with correct timing |
+| MemMang `heap_4` | implemented + host-tested + running on HW |
 | Software timers / event groups / stream+message buffers / co-routines | headers + config-gated skeletons |
-| lwIP 2.2.0 (TCP/IP, IPv4+IPv6, NO_SYS) | vendored + FlintRTOS port; compiles & links into firmware; GENET MAC driver next |
+| lwIP 2.2.0 (TCP/IP, IPv4+IPv6, NO_SYS) | vendored + FlintRTOS port; compiles & links into firmware; GENET MAC driver validation next |
 
-> The build environment here has no emulator (QEMU packages are blocked), so the AArch64 firmware
-> is **compiled, linked, and disassembly-verified** but not executed here. The portable logic is
-> **executed and unit-tested** natively. First hardware/QEMU step: confirm boot UART output, then
-> the timer-driven context switch between tasks A and B.
+> **Hardware bring-up complete (minimal kernel).** The `make LWIP=0` image boots on a real
+> Raspberry Pi 4 Model B and runs the two-task preemptive demo: task A every 500 ms and task B
+> every 1000 ms, driven by the 1 kHz generic-timer tick, with a verified context switch. The build
+> environment here still has no emulator (QEMU packages are blocked), so images are compiled and
+> linked here and flashed to an SD card for on-target validation.
+>
+> Bring-up notes captured on real silicon: (1) the GPU firmware routes the **mini-UART** (UART1),
+> not the PL011, to the GPIO14/15 header pins when no device-tree `disable-bt` overlay is present,
+> so the console driver writes to both UARTs; (2) `config.txt` must **not** carry a `dtoverlay`
+> line unless the overlay files are on the card, or `start4.elf` halts before loading the kernel;
+> (3) interrupts must stay masked from timer setup until the first task's `eret`, or an early tick
+> corrupts the first task's saved stack pointer. See `sdcard/README-BRINGUP.md`.
 
 ## Networking — lwIP (manifest 3)
 

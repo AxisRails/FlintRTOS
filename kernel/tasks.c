@@ -32,9 +32,31 @@ struct tskTaskControlBlock
     ListItem_t            xStateListItem;   /* ready / delayed / suspended list */
     ListItem_t            xEventListItem;   /* a queue's waiting list           */
     UBaseType_t           uxPriority;
-    StackType_t          *pxStack;
+    StackType_t          *pxStack;          /* low (base) end of the stack      */
+    uint32_t              uxStackDepth;     /* words, for overflow bounds check  */
     char                  pcTaskName[configMAX_TASK_NAME_LEN];
 };
+
+/* Stack painting value for the overflow guard (method-2 pattern check). */
+#define FLINT_STACK_FILL  ((StackType_t)0xA5A5A5A5A5A5A5A5ULL)
+
+#if defined(configCHECK_FOR_STACK_OVERFLOW) && (configCHECK_FOR_STACK_OVERFLOW > 0)
+/* Verify the outgoing task hasn't overrun its stack: the saved SP must still be
+ * within [pxStack, pxStack+depth], and the low guard words must be unmodified.
+ * On failure calls the application hook (which reports and halts). */
+static void prvCheckStackOverflow(TCB_t *pxTCB)
+{
+    const StackType_t *pxSP    = (const StackType_t *)pxTCB->pxTopOfStack;
+    const StackType_t *pxBase  = pxTCB->pxStack;
+
+    if ((pxSP < pxBase) ||
+        (pxBase[0] != FLINT_STACK_FILL) ||
+        (pxBase[1] != FLINT_STACK_FILL))
+    {
+        vApplicationStackOverflowHook((TaskHandle_t)pxTCB, pxTCB->pcTaskName);
+    }
+}
+#endif
 
 TCB_t *volatile pxCurrentTCB = NULL;
 
@@ -97,8 +119,20 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
         return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     }
 
-    pxNewTCB->pxStack    = pxStack;
-    pxNewTCB->uxPriority = uxPriority;
+    pxNewTCB->pxStack     = pxStack;
+    pxNewTCB->uxStackDepth = usStackDepth;
+    pxNewTCB->uxPriority  = uxPriority;
+
+    /* Paint the whole stack so an overflow can be detected (the context frame
+     * written below overwrites only the top of it). */
+    {
+        uint32_t uxWord;
+        for (uxWord = 0U; uxWord < usStackDepth; uxWord++)
+        {
+            pxStack[uxWord] = FLINT_STACK_FILL;
+        }
+    }
+
     for (ux = 0U; ux < (UBaseType_t)configMAX_TASK_NAME_LEN; ux++)
     {
         char c = (pcName != NULL) ? pcName[ux] : '\0';
@@ -166,6 +200,15 @@ void vTaskStartScheduler(void)
 void vTaskSwitchContext(void)
 {
     UBaseType_t uxPriority = uxTopReadyPriority;
+
+#if defined(configCHECK_FOR_STACK_OVERFLOW) && (configCHECK_FOR_STACK_OVERFLOW > 0)
+    /* The asm entry has already saved the outgoing task's SP into its TCB. */
+    if (pxCurrentTCB != NULL)
+    {
+        prvCheckStackOverflow((TCB_t *)pxCurrentTCB);
+    }
+#endif
+
     while (listLIST_IS_EMPTY(&(xReadyTasksLists[uxPriority])) != pdFALSE)
     {
         if (uxPriority == 0U) { break; }
