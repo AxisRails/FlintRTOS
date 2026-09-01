@@ -30,6 +30,8 @@ typedef struct QueueDefinition
     volatile UBaseType_t uxMessagesWaiting;
     List_t       xTasksWaitingToSend;
     List_t       xTasksWaitingToReceive;
+    uint8_t      ucIsMutex;            /* 1 => mutex: track holder + inheritance */
+    void        *pxMutexHolder;        /* TCB currently holding the mutex        */
 } Queue_t;
 
 QueueHandle_t xQueueCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize)
@@ -54,6 +56,8 @@ QueueHandle_t xQueueCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize)
     pxQueue->pcReadFrom = pxQueue->pcHead +
                           ((uxQueueLength - 1U) * ((uxItemSize > 0U) ? uxItemSize : 1U));
     pxQueue->uxMessagesWaiting = 0U;
+    pxQueue->ucIsMutex     = 0U;
+    pxQueue->pxMutexHolder = NULL;
     vListInitialise(&(pxQueue->xTasksWaitingToSend));
     vListInitialise(&(pxQueue->xTasksWaitingToReceive));
 
@@ -111,6 +115,11 @@ static BaseType_t prvSend(Queue_t *pxQueue, const void *pvItem,
         if (pxQueue->uxMessagesWaiting < pxQueue->uxLength)
         {
             prvCopyIn(pxQueue, pvItem, xToFront);
+            if (pxQueue->ucIsMutex != 0U)
+            {
+                (void)vTaskPriorityDisinherit(pxQueue->pxMutexHolder);
+                pxQueue->pxMutexHolder = NULL;
+            }
             xYield = xTaskRemoveFromEventList(&(pxQueue->xTasksWaitingToReceive));
             xDone  = pdPASS;
         }
@@ -133,6 +142,11 @@ static BaseType_t prvSend(Queue_t *pxQueue, const void *pvItem,
         if (pxQueue->uxMessagesWaiting < pxQueue->uxLength)
         {
             prvCopyIn(pxQueue, pvItem, xToFront);
+            if (pxQueue->ucIsMutex != 0U)
+            {
+                (void)vTaskPriorityDisinherit(pxQueue->pxMutexHolder);
+                pxQueue->pxMutexHolder = NULL;
+            }
             xYield = xTaskRemoveFromEventList(&(pxQueue->xTasksWaitingToReceive));
             taskEXIT_CRITICAL();
             if (xYield != pdFALSE) { taskYIELD(); }
@@ -166,6 +180,10 @@ BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicks
         if (pxQueue->uxMessagesWaiting > 0U)
         {
             prvCopyOut(pxQueue, pvBuffer);
+            if (pxQueue->ucIsMutex != 0U)
+            {
+                pxQueue->pxMutexHolder = xTaskGetCurrentTaskHandle();
+            }
             xYield = xTaskRemoveFromEventList(&(pxQueue->xTasksWaitingToSend));
             xDone  = pdPASS;
         }
@@ -179,6 +197,11 @@ BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicks
         if (xTicksToWait == 0U) { return errQUEUE_EMPTY; }
 
         taskENTER_CRITICAL();
+        /* About to block on a mutex: bump the holder so it can release soon. */
+        if (pxQueue->ucIsMutex != 0U)
+        {
+            vTaskPriorityInherit(pxQueue->pxMutexHolder);
+        }
         vTaskPlaceOnEventList(&(pxQueue->xTasksWaitingToReceive), xTicksToWait);
         taskEXIT_CRITICAL();
         taskYIELD();
@@ -187,6 +210,10 @@ BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicks
         if (pxQueue->uxMessagesWaiting > 0U)
         {
             prvCopyOut(pxQueue, pvBuffer);
+            if (pxQueue->ucIsMutex != 0U)
+            {
+                pxQueue->pxMutexHolder = xTaskGetCurrentTaskHandle();
+            }
             xYield = xTaskRemoveFromEventList(&(pxQueue->xTasksWaitingToSend));
             taskEXIT_CRITICAL();
             if (xYield != pdFALSE) { taskYIELD(); }
@@ -212,6 +239,7 @@ QueueHandle_t xQueueCreateMutex(void)
     QueueHandle_t xQueue = xQueueCreate(1U, 0U);
     if (xQueue != NULL)
     {
+        ((Queue_t *)xQueue)->ucIsMutex = 1U;
         (void)xQueueSendToBack(xQueue, NULL, 0U);   /* mutex starts available */
     }
     return xQueue;

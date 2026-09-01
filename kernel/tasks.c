@@ -20,7 +20,7 @@
 #ifndef FLINT_SCHED_TRACE
 #define FLINT_SCHED_TRACE 0
 #endif
-#define FLINT_TRACE_MAX   40U
+#define FLINT_TRACE_MAX   8U
 #if (FLINT_SCHED_TRACE == 1)
 #include "uart.h"
 #endif
@@ -31,7 +31,8 @@ struct tskTaskControlBlock
     volatile StackType_t *pxTopOfStack;
     ListItem_t            xStateListItem;   /* ready / delayed / suspended list */
     ListItem_t            xEventListItem;   /* a queue's waiting list           */
-    UBaseType_t           uxPriority;
+    UBaseType_t           uxPriority;       /* current (possibly inherited)      */
+    UBaseType_t           uxBasePriority;   /* assigned priority (for disinherit) */
     StackType_t          *pxStack;          /* low (base) end of the stack      */
     uint32_t              uxStackDepth;     /* words, for overflow bounds check  */
     char                  pcTaskName[configMAX_TASK_NAME_LEN];
@@ -122,6 +123,7 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
     pxNewTCB->pxStack     = pxStack;
     pxNewTCB->uxStackDepth = usStackDepth;
     pxNewTCB->uxPriority  = uxPriority;
+    pxNewTCB->uxBasePriority = uxPriority;
 
     /* Paint the whole stack so an overflow can be detected (the context frame
      * written below overwrites only the top of it). */
@@ -167,6 +169,92 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
 
     if (pxCreatedTask != NULL) { *pxCreatedTask = (TaskHandle_t)pxNewTCB; }
     return pdPASS;
+}
+
+UBaseType_t uxTaskPriorityGet(TaskHandle_t xTask)
+{
+    const TCB_t *pxTCB = (xTask != NULL) ? (const TCB_t *)xTask : (const TCB_t *)pxCurrentTCB;
+    return (pxTCB != NULL) ? pxTCB->uxPriority : 0U;
+}
+
+/* Master switch for mutex priority inheritance. Defaults on (or to
+ * configUSE_MUTEX_PRIORITY_INHERITANCE if defined). Turning it OFF reproduces
+ * unbounded priority inversion - useful to demonstrate the failure mode. */
+#if defined(configUSE_MUTEX_PRIORITY_INHERITANCE) && (configUSE_MUTEX_PRIORITY_INHERITANCE == 0)
+static volatile BaseType_t xInheritEnabled = pdFALSE;
+#else
+static volatile BaseType_t xInheritEnabled = pdTRUE;
+#endif
+
+void vTaskSetMutexInheritance(BaseType_t xEnable)
+{
+    xInheritEnabled = xEnable;
+}
+
+BaseType_t xTaskGetMutexInheritance(void)
+{
+    return xInheritEnabled;
+}
+
+/* Move a task that may be on a ready list to a new priority list. Safe whether
+ * the task is currently ready, running, or blocked (delayed/event). */
+static void prvReprioritise(TCB_t *pxTCB, UBaseType_t uxNewPriority)
+{
+    if (listIS_CONTAINED_WITHIN(&(xReadyTasksLists[pxTCB->uxPriority]),
+                                &(pxTCB->xStateListItem)) != pdFALSE)
+    {
+        (void)uxListRemove(&(pxTCB->xStateListItem));
+        pxTCB->uxPriority = uxNewPriority;
+        prvAddTaskToReadyList(pxTCB);
+    }
+    else
+    {
+        /* Blocked/delayed elsewhere: just record the new priority. */
+        pxTCB->uxPriority = uxNewPriority;
+    }
+}
+
+/* Priority inheritance: called when the current task is about to block on a
+ * mutex held by pxMutexHolder. If the holder is lower priority, raise it to the
+ * blocker's priority so it can release the mutex promptly (avoids unbounded
+ * priority inversion). */
+void vTaskPriorityInherit(TaskHandle_t xMutexHolder)
+{
+    TCB_t *pxHolder = (TCB_t *)xMutexHolder;
+    TCB_t *pxCur    = (TCB_t *)pxCurrentTCB;
+
+    if ((pxHolder == NULL) || (pxCur == NULL)) { return; }
+    if (xInheritEnabled == pdFALSE) { return; }   /* inversion demo: no boost */
+
+    if (pxHolder->uxPriority < pxCur->uxPriority)
+    {
+        prvReprioritise(pxHolder, pxCur->uxPriority);
+#if (FLINT_SCHED_TRACE == 1)
+        uart_printf("[inherit] '%s' boosted %u -> %u (by '%s')\n",
+                    pxHolder->pcTaskName, (unsigned int)pxHolder->uxBasePriority,
+                    (unsigned int)pxHolder->uxPriority, pxCur->pcTaskName);
+#endif
+    }
+}
+
+/* Undo inheritance when the holder releases the mutex: restore its base
+ * priority. Returns pdTRUE if a yield may now be warranted. */
+BaseType_t vTaskPriorityDisinherit(TaskHandle_t xMutexHolder)
+{
+    TCB_t *pxHolder = (TCB_t *)xMutexHolder;
+
+    if (pxHolder == NULL) { return pdFALSE; }
+
+    if (pxHolder->uxPriority != pxHolder->uxBasePriority)
+    {
+        prvReprioritise(pxHolder, pxHolder->uxBasePriority);
+#if (FLINT_SCHED_TRACE == 1)
+        uart_printf("[disinherit] '%s' restored -> %u\n",
+                    pxHolder->pcTaskName, (unsigned int)pxHolder->uxBasePriority);
+#endif
+        return pdTRUE;
+    }
+    return pdFALSE;
 }
 
 static void prvInitialiseTaskLists(void)

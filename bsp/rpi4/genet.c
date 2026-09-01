@@ -19,6 +19,7 @@
  */
 #include "genet.h"
 #include "rpi4.h"
+#include "uart.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -105,6 +106,7 @@ static uint8_t s_tx_buf[TX_BUF_COUNT][GENET_MAX_FRAME] __attribute__((aligned(64
 static uint32_t s_rx_index;   /* our RX consumer position (descriptor)      */
 static uint32_t s_tx_index;   /* our TX producer position (descriptor)      */
 static bool     s_link;
+static uint32_t s_phy_addr = 1U;   /* discovered by MDIO scan (RPi4 = 1)    */
 
 static void udelay_approx(uint32_t n) { while (n-- > 0U) { __asm__ volatile("nop"); } }
 
@@ -129,6 +131,64 @@ static void mdio_write(uint32_t phy, uint32_t reg, uint16_t val)
     {
         if ((rd(UMAC_MDIO_CMD) & MDIO_START_BUSY) == 0U) { break; }
     }
+}
+
+static uint32_t rdma_ring(uint32_t reg);   /* defined below */
+static uint32_t tdma_ring(uint32_t reg);
+
+/* Scan MDIO addresses 0..31 for a responding PHY (id reg != 0/0xffff). */
+static int mdio_scan(void)
+{
+    for (uint32_t a = 0U; a < 32U; a++)
+    {
+        uint16_t id1 = mdio_read(a, 2U);   /* PHYIDR1 */
+        if ((id1 != 0x0000U) && (id1 != 0xFFFFU))
+        {
+            return (int)a;
+        }
+    }
+    return -1;
+}
+
+/* One-shot bring-up diagnostics: is GENET powered/addressed, does MDIO reach
+ * the PHY, and what is the link state. Print BEFORE trusting the DMA rings. */
+void genet_diag(void)
+{
+    uint32_t rev = rd(SYS_REV_CTRL);
+    uart_printf("[genet] SYS_REV_CTRL = %p  (major nibble=%u, expect 6 for GENETv5)\n",
+                (void *)(uintptr_t)rev, (unsigned int)((rev >> 24) & 0x0FU));
+    uart_printf("[genet] UMAC_CMD     = %p\n", (void *)(uintptr_t)rd(UMAC_CMD));
+
+    int a = mdio_scan();
+    if (a < 0)
+    {
+        uart_printf("[genet] *** no PHY answered MDIO (0..31) ***\n");
+        uart_printf("[genet]     -> GENET clock/power likely off, or base/MDIO reg wrong\n");
+        return;
+    }
+    s_phy_addr = (uint32_t)a;
+    uint16_t id1  = mdio_read(s_phy_addr, 2U);
+    uint16_t id2  = mdio_read(s_phy_addr, 3U);
+    uint16_t bmcr = mdio_read(s_phy_addr, 0U);
+    uint16_t bmsr = mdio_read(s_phy_addr, 1U);
+    uart_printf("[genet] PHY @ addr %u: ID=0x%x:0x%x (BCM54213PE ~ 600d:84xx)\n",
+                (unsigned int)s_phy_addr, (unsigned int)id1, (unsigned int)id2);
+    uart_printf("[genet]   BMCR=0x%x BMSR=0x%x  link=%s  autoneg=%s\n",
+                (unsigned int)bmcr, (unsigned int)bmsr,
+                ((bmsr & (1U << 2)) != 0U) ? "UP" : "down",
+                ((bmsr & (1U << 5)) != 0U) ? "complete" : "in-progress");
+}
+
+/* Dump the DMA ring producer/consumer indices (RX/TX progress on HW). */
+void genet_diag_rings(void)
+{
+    uart_printf("[genet] RX prod=%u cons=%u (ours=%u) | TX prod=%u cons=%u (ours=%u)\n",
+                (unsigned int)(rd(rdma_ring(RDMA_PROD_INDEX)) & 0xFFFFU),
+                (unsigned int)(rd(rdma_ring(RDMA_CONS_INDEX)) & 0xFFFFU),
+                (unsigned int)(s_rx_index & 0xFFFFU),
+                (unsigned int)(rd(tdma_ring(TDMA_PROD_INDEX)) & 0xFFFFU),
+                (unsigned int)(rd(tdma_ring(TDMA_CONS_INDEX)) & 0xFFFFU),
+                (unsigned int)(s_tx_index & 0xFFFFU));
 }
 
 /* ---- DMA ring register helpers ---------------------------------------- */
@@ -202,15 +262,18 @@ bool genet_init(const uint8_t mac[6])
     wr(RBUF_CTRL, rd(RBUF_CTRL) | RBUF_ALIGN_2B);
     set_mac_address(mac);
 
-    /* PHY: BCM54213PE at address 1 on RPi4. Kick a soft reset + autoneg. */
+    /* PHY: BCM54213PE (RPi4). Discover its MDIO address, then kick autoneg. */
     {
-        uint16_t id1 = mdio_read(1U, 2U);   /* PHY ID reg */
-        if ((id1 == 0U) || (id1 == 0xFFFFU))
+        int a = mdio_scan();
+        if (a >= 0)
         {
-            /* MDIO not responding - most likely GENET clock/power not enabled. */
-            s_link = false;
+            s_phy_addr = (uint32_t)a;
+            mdio_write(s_phy_addr, 0U, 0x1200U);  /* BMCR: autoneg enable+restart */
         }
-        mdio_write(1U, 0U, 0x1200U);        /* BMCR: autoneg enable + restart */
+        else
+        {
+            s_link = false;   /* MDIO silent: GENET clock/power likely off */
+        }
     }
 
     rx_ring_init();
@@ -227,7 +290,9 @@ bool genet_init(const uint8_t mac[6])
 
 bool genet_link_up(void)
 {
-    uint16_t bmsr = mdio_read(1U, 1U);      /* BMSR: bit 2 = link up */
+    uint16_t bmsr = mdio_read(s_phy_addr, 1U);   /* BMSR: bit 2 = link up */
+    /* BMSR link bit latches low; read twice for the current state. */
+    bmsr = mdio_read(s_phy_addr, 1U);
     s_link = ((bmsr & (1U << 2)) != 0U);
     return s_link;
 }

@@ -65,6 +65,9 @@
 #define LWIP_ACD                    1
 #define LWIP_IGMP                   1   /* PTP multicast */
 #define LWIP_IPV6_MLD               0
+/* On LP64 the IPv6 reassembly helper doesn't fit in the frag header slot;
+ * copy the header instead (required, per lwIP's static assert). */
+#define IPV6_FRAG_COPYHEADER        1
 #define LWIP_DNS                    1
 
 /* ---- Netif --------------------------------------------------------------- */

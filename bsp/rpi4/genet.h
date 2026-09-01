@@ -34,4 +34,9 @@ bool genet_recv(uint8_t *buf, uint16_t *len);
 /* True once the PHY reports link up. */
 bool genet_link_up(void);
 
+/* Bring-up diagnostics (print over UART): GENET revision, MDIO PHY discovery,
+ * link/autoneg state, and DMA ring producer/consumer indices. */
+void genet_diag(void);
+void genet_diag_rings(void);
+
 #endif /* FLINT_BSP_GENET_H */

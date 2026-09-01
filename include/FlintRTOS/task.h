@@ -41,6 +41,17 @@ TaskHandle_t xTaskGetCurrentTaskHandle(void);
  * report and halt. */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName);
 
+/* Priority inheritance (used by the mutex in queue.c to bound priority
+ * inversion) and priority query. */
+UBaseType_t uxTaskPriorityGet(TaskHandle_t xTask);
+void        vTaskPriorityInherit(TaskHandle_t xMutexHolder);
+BaseType_t  vTaskPriorityDisinherit(TaskHandle_t xMutexHolder);
+
+/* Master switch for mutex priority inheritance (default on). Disable to
+ * demonstrate the unbounded priority-inversion failure mode. */
+void        vTaskSetMutexInheritance(BaseType_t xEnable);
+BaseType_t  xTaskGetMutexInheritance(void);
+
 #define taskYIELD()                 portYIELD()
 #define taskENTER_CRITICAL()        portENTER_CRITICAL()
 #define taskEXIT_CRITICAL()         portEXIT_CRITICAL()

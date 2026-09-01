@@ -87,8 +87,9 @@ libraries in or out (pay-for-what-you-use).
 |---|---|
 | Boot + UART console + AArch64 port | **runs on real Raspberry Pi 4 hardware** ✅ (EL2→EL1, UART, GIC-400, generic timer) |
 | List Management (`list.c`) | implemented + host-tested + running on HW |
-| Queue Management (`queue.c`) | core FIFO implemented + host-tested; blocking wires to tasks next |
-| Task Management (`tasks.c`) + context switch | **validated on HW** ✅ — preemptive scheduling, `vTaskDelay` blocking, delayed-list wakeup, and context switch all confirmed with correct timing |
+| Queue Management (`queue.c`) + mutex/semaphores | **validated on HW** ✅ — queue-backed mutex enforces correct mutual exclusion on a shared counter across three interleaved tasks (no lost updates) |
+| Task Management (`tasks.c`) + context switch | **validated on HW** ✅ — preemptive priority scheduling (3 levels, higher-priority task preempts on wake), `vTaskDelay` blocking, delayed-list wakeup, and context switch all confirmed with correct timing |
+| Stack-overflow detection (`configCHECK_FOR_STACK_OVERFLOW`) | **validated on HW** ✅ — each stack painted and its guard checked on every context switch |
 | MemMang `heap_4` | implemented + host-tested + running on HW |
 | Software timers / event groups / stream+message buffers / co-routines | headers + config-gated skeletons |
 | lwIP 2.2.0 (TCP/IP, IPv4+IPv6, NO_SYS) | vendored + FlintRTOS port; compiles & links into firmware; GENET MAC driver validation next |

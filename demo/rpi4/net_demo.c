@@ -1,11 +1,11 @@
 /*
- * FlintRTOS - lwIP network demo (RPi4). Enabled by configUSE_LWIP.
+ * FlintRTOS - lwIP network demo (RPi4), NO_SYS mode. Enabled by configUSE_LWIP.
  *
- * NO_SYS mode: a dedicated FlintRTOS task brings lwIP up on the Ethernet netif,
- * opens a UDP echo server on port 7, then pumps the stack (poll RX + service
- * timeouts). Frames actually move once the GENET MAC driver fills in
- * flint_low_level_output/flint_netif_poll; until then the stack initialises and
- * runs (verifiable on hardware/QEMU).
+ * Bring-up focus: after initialising lwIP + the GENET MAC, print a diagnostic
+ * report (GENET revision, MDIO PHY discovery, link/autoneg), then run the stack
+ * with a UDP echo server on :7. Each cycle it reports link state, the DMA ring
+ * indices, and (once link is up) periodically sends a gratuitous ARP to test
+ * the TX path - so the console shows exactly how far the Ethernet path gets.
  */
 #include "FlintRTOS.h"
 
@@ -18,8 +18,10 @@
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
 #include "lwip/udp.h"
+#include "lwip/etharp.h"
 #include "lwip/ip_addr.h"
 #include "flint_netif.h"
+#include "genet.h"
 
 static struct netif s_netif;
 
@@ -29,7 +31,8 @@ static void udp_echo_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     (void)arg;
     if (p != NULL)
     {
-        (void)udp_sendto(pcb, p, addr, port);   /* echo it back */
+        uart_printf("[net] UDP rx %u bytes on :7 -> echoing\n", (unsigned int)p->tot_len);
+        (void)udp_sendto(pcb, p, addr, port);
         pbuf_free(p);
     }
 }
@@ -45,7 +48,7 @@ static void flint_net_init(void)
     IP4_ADDR(&gw,      192, 168, 1, 1);
 
     (void)netif_add(&s_netif, &ipaddr, &netmask, &gw, NULL,
-                    flint_netif_init, netif_input);
+                    flint_netif_init, netif_input);   /* calls genet_init() */
     netif_set_default(&s_netif);
     netif_set_up(&s_netif);
 
@@ -65,11 +68,42 @@ static void flint_net_init(void)
 void vNetworkTask(void *pvParameters)
 {
     (void)pvParameters;
+    bool     was_up = false;
+    uint32_t report = 0U;
+
+    uart_printf("\n[net] ===== GENET / lwIP bring-up =====\n");
     flint_net_init();
+
+    /* Foundation check: is GENET powered/addressed and can MDIO reach the PHY? */
+    genet_diag();
+
     for (;;)
     {
-        flint_netif_poll(&s_netif);   /* drain RX -> lwIP (GENET driver TODO) */
-        sys_check_timeouts();         /* lwIP periodic processing            */
+        flint_netif_poll(&s_netif);   /* drain RX -> lwIP */
+        sys_check_timeouts();
+
+        /* Roughly once a second (1 ms poll delay). */
+        report++;
+        if (report >= 1000U)
+        {
+            report = 0U;
+            bool up = genet_link_up();
+            if (up != was_up)
+            {
+                uart_printf("[net] LINK %s\n", up ? "UP" : "DOWN");
+                was_up = up;
+                if (up)
+                {
+                    etharp_gratuitous(&s_netif);   /* announce ourselves (TX test) */
+                }
+            }
+            genet_diag_rings();
+            if (up)
+            {
+                etharp_gratuitous(&s_netif);       /* periodic TX to watch cons idx */
+            }
+        }
+
         vTaskDelay(1U);
     }
 }

@@ -1,84 +1,16 @@
 /*
- * FlintRTOS - RPi4 demo: preemptive multitasking + mutex + stack-overflow guard.
+ * FlintRTOS - RPi4 demo entry.
  *
- * Tasks A and B (equal priority 2) increment a shared counter under a mutex and
- * print at different rates. Task C (priority 3, higher) wakes periodically and
- * preempts A/B to read the counter - demonstrating priority preemption and the
- * queue-backed mutex on real hardware. A stack-overflow hook reports and halts.
+ * Two demos, selected at build time:
+ *   - Networking build (make / make LWIP_OS=1): a heartbeat task plus the lwIP
+ *     network task (net_demo.c / net_demo_os.c), which brings up the GENET MAC.
+ *   - Minimal build (make LWIP=0): the deterministic priority-inversion /
+ *     inheritance demo (L/M/H + mutex).
  */
 #include "FlintRTOS.h"
 #include "task.h"
 #include "semphr.h"
 #include "uart.h"
-
-#if defined(FLINT_LWIP_OS)
-extern void vNetworkTaskOS(void *pvParameters);
-#elif (configUSE_LWIP == 1)
-extern void vNetworkTask(void *pvParameters);
-#endif
-
-/* Shared state guarded by a mutex (exercises the blocking primitives on HW). */
-static SemaphoreHandle_t  xSharedMutex = NULL;
-static volatile uint32_t  ulSharedCounter = 0U;
-
-static void prvBumpShared(uint32_t ulAmount, const char *pcWho)
-{
-    if (xSemaphoreTake(xSharedMutex, 100U) == pdTRUE)
-    {
-        ulSharedCounter += ulAmount;
-        (void)xSemaphoreGive(xSharedMutex);
-    }
-    else
-    {
-        uart_printf("[%s] MUTEX TIMEOUT - blocking primitive stuck!\n", pcWho);
-    }
-}
-
-static void vTaskA(void *pvParameters)
-{
-    (void)pvParameters;
-    uint32_t n = 0U;
-    for (;;)
-    {
-        prvBumpShared(1U, "A");
-        uart_printf("[A] tick %u  (t=%u, shared=%u)\n",
-                    n, (unsigned int)xTaskGetTickCount(), (unsigned int)ulSharedCounter);
-        n++;
-        vTaskDelay(500U);
-    }
-}
-
-static void vTaskB(void *pvParameters)
-{
-    (void)pvParameters;
-    uint32_t n = 0U;
-    for (;;)
-    {
-        prvBumpShared(100U, "B");
-        uart_printf("    [B] tock %u\n", n);
-        n++;
-        vTaskDelay(1000U);
-    }
-}
-
-/* Higher priority than A/B: when this wakes it must preempt them immediately. */
-static void vTaskC(void *pvParameters)
-{
-    (void)pvParameters;
-    uint32_t n = 0U;
-    for (;;)
-    {
-        vTaskDelay(2000U);
-        if (xSemaphoreTake(xSharedMutex, 100U) == pdTRUE)
-        {
-            uart_printf(">>> [C] preempt @t=%u: shared counter = %u (cycle %u)\n",
-                        (unsigned int)xTaskGetTickCount(),
-                        (unsigned int)ulSharedCounter, n);
-            (void)xSemaphoreGive(xSharedMutex);
-        }
-        n++;
-    }
-}
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
@@ -86,45 +18,140 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
     uart_printf("\n*** STACK OVERFLOW in task '%s' - halting ***\n",
                 (pcTaskName != NULL) ? pcTaskName : "?");
     taskDISABLE_INTERRUPTS();
+    for (;;) { __asm__ volatile("wfe"); }
+}
+
+#if defined(FLINT_LWIP_OS) || (configUSE_LWIP == 1)
+/* ================= Networking build ===================================== */
+#if defined(FLINT_LWIP_OS)
+extern void vNetworkTaskOS(void *pvParameters);
+#else
+extern void vNetworkTask(void *pvParameters);
+#endif
+
+/* Heartbeat: proves the scheduler keeps running independently of networking. */
+static void vHeartbeat(void *pvParameters)
+{
+    (void)pvParameters;
+    uint32_t n = 0U;
     for (;;)
     {
-        __asm__ volatile("wfe");
+        uart_printf("[hb] alive (t=%u, beat %u)\n",
+                    (unsigned int)xTaskGetTickCount(), n);
+        n++;
+        vTaskDelay(3000U);
     }
 }
 
 int main(void)
 {
-    BaseType_t rc;
+    uart_printf("[main] FlintRTOS networking demo (lwIP)\n");
 
-    xSharedMutex = xSemaphoreCreateMutex();
-    if (xSharedMutex == NULL)
-    {
-        uart_printf("[main] FATAL: could not create mutex\n");
-        for (;;) { __asm__ volatile("wfe"); }
-    }
-    uart_printf("[main] mutex created; creating tasks...\n");
-
-    rc = xTaskCreate(vTaskA, "A", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
-    uart_printf("[main]   xTaskCreate(A) -> %d\n", (int)rc);
-    rc = xTaskCreate(vTaskB, "B", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
-    uart_printf("[main]   xTaskCreate(B) -> %d\n", (int)rc);
-    rc = xTaskCreate(vTaskC, "C", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 3U, NULL);
-    uart_printf("[main]   xTaskCreate(C, prio 3) -> %d\n", (int)rc);
-
+    (void)xTaskCreate(vHeartbeat, "hb", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 1U, NULL);
 #if defined(FLINT_LWIP_OS)
-    (void)xTaskCreate(vNetworkTaskOS, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 8U), NULL, 4U, NULL);
-#elif (configUSE_LWIP == 1)
-    (void)xTaskCreate(vNetworkTask, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 4U), NULL, 4U, NULL);
+    (void)xTaskCreate(vNetworkTaskOS, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 8U), NULL, 3U, NULL);
+#else
+    (void)xTaskCreate(vNetworkTask, "net", (uint32_t)(configMINIMAL_STACK_SIZE * 4U), NULL, 3U, NULL);
 #endif
 
     uart_printf("[main] starting scheduler with %u task(s)...\n",
                 (unsigned int)uxTaskGetNumberOfTasks());
+    vTaskStartScheduler();
+    for (;;) { __asm__ volatile("wfe"); }
+}
 
-    vTaskStartScheduler();   /* does not return */
+#else
+/* ================= Minimal build: priority-inversion demo =============== */
 
-    uart_printf("[main] ERROR: vTaskStartScheduler() returned!\n");
+static SemaphoreHandle_t xMutex     = NULL;
+static SemaphoreHandle_t xMutexHeld = NULL;
+
+#define HOLD_MS   60U
+#define LOW_GAP   120U
+#define SPIN_MS   150U
+#define MED_GAP   50U
+#define PHASE1_CYCLES 5U
+
+static void busy_wait_ms(uint32_t ms)
+{
+    uint64_t f, start, now;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(start));
+    const uint64_t target = start + ((f / 1000U) * (uint64_t)ms);
+    do {
+        __asm__ volatile("mrs %0, cntpct_el0" : "=r"(now));
+    } while (now < target);
+}
+
+static void vTaskLow(void *pvParameters)
+{
+    (void)pvParameters;
     for (;;)
     {
-        __asm__ volatile("wfe");
+        (void)xSemaphoreTake(xMutex, portMAX_DELAY);
+        (void)xSemaphoreGive(xMutexHeld);
+        busy_wait_ms(HOLD_MS);
+        (void)xSemaphoreGive(xMutex);
+        vTaskDelay(LOW_GAP);
     }
 }
+
+static void vTaskMed(void *pvParameters)
+{
+    (void)pvParameters;
+    for (;;)
+    {
+        busy_wait_ms(SPIN_MS);
+        vTaskDelay(MED_GAP);
+    }
+}
+
+static void vTaskHigh(void *pvParameters)
+{
+    (void)pvParameters;
+    uint32_t cycle = 0U;
+    for (;;)
+    {
+        (void)xSemaphoreTake(xMutexHeld, portMAX_DELAY);
+        TickType_t t0 = xTaskGetTickCount();
+        (void)xSemaphoreTake(xMutex, portMAX_DELAY);
+        TickType_t wait = xTaskGetTickCount() - t0;
+        (void)xSemaphoreGive(xMutex);
+
+        uart_printf(">>> [H] cycle %u: blocked %u ms on mutex held by low-prio L  [inheritance %s]\n",
+                    cycle, (unsigned int)wait,
+                    (xTaskGetMutexInheritance() != pdFALSE) ? "ON" : "OFF");
+        cycle++;
+        if (cycle == PHASE1_CYCLES)
+        {
+            uart_printf("\n===== enabling PRIORITY INHERITANCE - watch H's wait collapse =====\n\n");
+            vTaskSetMutexInheritance(pdTRUE);
+        }
+    }
+}
+
+int main(void)
+{
+    xMutex     = xSemaphoreCreateMutex();
+    xMutexHeld = xSemaphoreCreateBinary();
+    if ((xMutex == NULL) || (xMutexHeld == NULL))
+    {
+        uart_printf("[main] FATAL: could not create semaphores\n");
+        for (;;) { __asm__ volatile("wfe"); }
+    }
+
+    vTaskSetMutexInheritance(pdFALSE);
+    uart_printf("[main] deterministic priority-inversion demo: L(1) M(2) H(3)\n");
+    uart_printf("[main] PHASE 1: inheritance OFF - H must wait behind M (inversion)\n");
+
+    (void)xTaskCreate(vTaskLow,  "L", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 1U, NULL);
+    (void)xTaskCreate(vTaskMed,  "M", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 2U, NULL);
+    (void)xTaskCreate(vTaskHigh, "H", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 3U, NULL);
+
+    uart_printf("[main] starting scheduler with %u task(s)...\n",
+                (unsigned int)uxTaskGetNumberOfTasks());
+    vTaskStartScheduler();
+    for (;;) { __asm__ volatile("wfe"); }
+}
+
+#endif /* networking vs minimal */
