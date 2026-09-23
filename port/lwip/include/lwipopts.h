@@ -61,6 +61,8 @@
 #define LWIP_UDP                    1
 #define LWIP_TCP                    1
 #define LWIP_DHCP                   1
+/* Accept DHCP replies addressed to us while our IP is still 0.0.0.0. */
+#define IP_ACCEPT_LINK_LAYER_ADDRESSING 1
 #define LWIP_AUTOIP                 0
 #define LWIP_ACD                    1
 #define LWIP_IGMP                   1   /* PTP multicast */

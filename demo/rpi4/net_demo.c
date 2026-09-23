@@ -19,7 +19,9 @@
 #include "lwip/timeouts.h"
 #include "lwip/udp.h"
 #include "lwip/etharp.h"
+#include "lwip/dhcp.h"
 #include "lwip/ip_addr.h"
+#include "lwip/ip4_addr.h"
 #include "flint_netif.h"
 #include "genet.h"
 
@@ -43,14 +45,16 @@ static void flint_net_init(void)
 
     lwip_init();
 
-    IP4_ADDR(&ipaddr,  192, 168, 1, 50);
-    IP4_ADDR(&netmask, 255, 255, 255, 0);
-    IP4_ADDR(&gw,      192, 168, 1, 1);
+    /* Start with 0.0.0.0 - the DHCP client fills these in from the server. */
+    IP4_ADDR(&ipaddr,  0, 0, 0, 0);
+    IP4_ADDR(&netmask, 0, 0, 0, 0);
+    IP4_ADDR(&gw,      0, 0, 0, 0);
 
     (void)netif_add(&s_netif, &ipaddr, &netmask, &gw, NULL,
                     flint_netif_init, netif_input);   /* calls genet_init() */
     netif_set_default(&s_netif);
     netif_set_up(&s_netif);
+    (void)dhcp_start(&s_netif);                       /* request a lease */
 
     {
         struct udp_pcb *pcb = udp_new();
@@ -61,14 +65,18 @@ static void flint_net_init(void)
         }
     }
 
-    uart_printf("[net] lwIP %d.%d.%d up @ 192.168.1.50; UDP echo on :7\n",
+    uart_printf("[net] lwIP %d.%d.%d up; DHCP started; UDP echo on :7\n",
                 LWIP_VERSION_MAJOR, LWIP_VERSION_MINOR, LWIP_VERSION_REVISION);
+    uart_printf("[net] MAC = %x:%x:%x:%x:%x:%x  (DHCP states: 6=SELECTING 1=REQUESTING 10=BOUND)\n",
+                s_netif.hwaddr[0], s_netif.hwaddr[1], s_netif.hwaddr[2],
+                s_netif.hwaddr[3], s_netif.hwaddr[4], s_netif.hwaddr[5]);
 }
 
 void vNetworkTask(void *pvParameters)
 {
     (void)pvParameters;
     bool     was_up = false;
+    bool     bound  = false;
     uint32_t report = 0U;
 
     uart_printf("\n[net] ===== GENET / lwIP bring-up =====\n");
@@ -76,11 +84,23 @@ void vNetworkTask(void *pvParameters)
 
     /* Foundation check: is GENET powered/addressed and can MDIO reach the PHY? */
     genet_diag();
+    genet_probe();   /* ground-truth DMA register layout + enable state */
 
     for (;;)
     {
         flint_netif_poll(&s_netif);   /* drain RX -> lwIP */
-        sys_check_timeouts();
+        sys_check_timeouts();         /* drives the DHCP state machine */
+
+        /* Announce a DHCP lease the moment it binds. */
+        if (!bound && (ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0U))
+        {
+            bound = true;
+            uart_printf("\n*** [net] DHCP LEASE ACQUIRED ***\n");
+            uart_printf("[net]   IP  = %s\n", ip4addr_ntoa(netif_ip4_addr(&s_netif)));
+            uart_printf("[net]   GW  = %s\n", ip4addr_ntoa(netif_ip4_gw(&s_netif)));
+            uart_printf("[net]   MASK= %s\n", ip4addr_ntoa(netif_ip4_netmask(&s_netif)));
+            uart_printf("[net]   ping me, or send UDP to :7\n\n");
+        }
 
         /* Roughly once a second (1 ms poll delay). */
         report++;
@@ -94,13 +114,17 @@ void vNetworkTask(void *pvParameters)
                 was_up = up;
                 if (up)
                 {
-                    etharp_gratuitous(&s_netif);   /* announce ourselves (TX test) */
+                    genet_adjust_link();   /* program MAC for negotiated speed */
                 }
             }
             genet_diag_rings();
-            if (up)
             {
-                etharp_gratuitous(&s_netif);       /* periodic TX to watch cons idx */
+                const struct dhcp *d = netif_dhcp_data(&s_netif);
+                uart_printf("[net] current IP = %s  | DHCP state=%u tries=%u xid=0x%x\n",
+                            ip4addr_ntoa(netif_ip4_addr(&s_netif)),
+                            (d != NULL) ? (unsigned int)d->state : 0U,
+                            (d != NULL) ? (unsigned int)d->tries : 0U,
+                            (d != NULL) ? (unsigned int)d->xid : 0U);
             }
         }
 

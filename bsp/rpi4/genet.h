@@ -38,5 +38,6 @@ bool genet_link_up(void);
  * link/autoneg state, and DMA ring producer/consumer indices. */
 void genet_diag(void);
 void genet_diag_rings(void);
+void genet_probe(void);
 
 #endif /* FLINT_BSP_GENET_H */
