@@ -10,6 +10,7 @@
 #include "genet.h"
 #include "rpi4.h"
 #include "uart.h"
+#include "portmacro.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -40,6 +41,15 @@ extern void *memcpy(void *, const void *, unsigned long);
 /* Hardware Filter Block (GENET v5: hfb_reg_offset = 0xFC00). */
 #define HFB_CTRL                (0xFC00U)
 #define HFB_FLT_ENABLE_V3PLUS   (0xFC10U)
+
+/* Level-2 interrupt controller 0 (default ring 16 RX/TX done). */
+#define INTRL2_0                (0x0200U)
+#define  INTRL2_CPU_STAT        (0x00U)
+#define  INTRL2_CPU_CLEAR       (0x08U)
+#define  INTRL2_CPU_MASK_STATUS (0x0CU)
+#define  INTRL2_CPU_MASK_SET    (0x10U)
+#define  INTRL2_CPU_MASK_CLEAR  (0x14U)
+#define  UMAC_IRQ_RXDMA_MBDONE  (1U << 13)
 
 #define UMAC_CMD                (0x0808U)
 #define  CMD_TX_EN              (1U << 0)
@@ -138,6 +148,18 @@ static inline void     dma_barrier(void) { __asm__ volatile("dsb sy" ::: "memory
 /* DMA buffers (Normal Non-Cacheable RAM -> DMA-coherent, no cache ops). */
 static uint8_t s_rx_buf[RX_DESCS][RX_BUF_LENGTH] __attribute__((aligned(64)));
 static uint8_t s_tx_buf[32][RX_BUF_LENGTH]       __attribute__((aligned(64)));
+
+/*
+ * Software timestamps (ARM generic-timer ticks, CNTPCT @ 54 MHz = 18.5 ns).
+ * The Pi 4B GENET/PHY has no IEEE-1588 unit, so RX frames are stamped in the
+ * RXDMA "buffer done" ISR - microseconds after the last byte lands - and TX
+ * frames at the DMA kick. s_rx_ts[] is indexed like the descriptor ring.
+ */
+static uint64_t          s_rx_ts[RX_DESCS];
+static volatile uint32_t s_rx_ts_seen = 0U;  /* descriptors stamped so far    */
+static volatile uint32_t s_rx_ts_late = 0U;  /* stamped by the poll, not ISR  */
+static uint64_t          s_tx_ts      = 0U;  /* stamp of the most recent TX   */
+static bool              s_irq_ok     = false;
 
 static uint32_t s_rx_dbg  = 0U;
 static uint32_t s_rx_drop = 0U;
@@ -245,8 +267,52 @@ void genet_diag(void)
                 ((bmsr & (1U << 2)) != 0U) ? "UP" : "down");
 }
 
+static inline uint64_t cntpct(void)
+{
+    uint64_t v;
+    __asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(v) :: "memory");
+    return v;
+}
+
+/* Stamp every descriptor the DMA has completed since the last call. Runs in
+   the ISR, or in genet_recv with IRQs masked - never concurrently. */
+static void rx_stamp_new(bool from_isr)
+{
+    uint64_t now  = cntpct();
+    uint32_t prod = rd(rdma_ring(RDMA_PROD_INDEX)) & 0xFFFFU;
+    uint32_t n    = 0U;
+
+    while (((s_rx_ts_seen & 0xFFFFU) != prod) && (n < RX_DESCS))
+    {
+        s_rx_ts[s_rx_ts_seen % RX_DESCS] = now;
+        s_rx_ts_seen++;
+        n++;
+        if (!from_isr) { s_rx_ts_late++; }
+    }
+}
+
+/* GENET INTRL2_0 ISR (timestamp band - no kernel calls, no printing). */
+static void genet_isr(void)
+{
+    uint32_t stat = rd(INTRL2_0 + INTRL2_CPU_STAT) & ~rd(INTRL2_0 + INTRL2_CPU_MASK_STATUS);
+    wr(INTRL2_0 + INTRL2_CPU_CLEAR, stat);
+    if ((stat & UMAC_IRQ_RXDMA_MBDONE) != 0U)
+    {
+        rx_stamp_new(true);
+    }
+}
+
+uint64_t genet_last_tx_stamp(void)
+{
+    return s_tx_ts;
+}
+
 void genet_diag_rings(void)
 {
+    uart_printf("[genet] irq=%u (%s) rx stamped late=%u\n",
+                (unsigned int)ulPortIrqCount(GENET_IRQ0_INTID),
+                s_irq_ok ? "installed" : "NOT installed",
+                (unsigned int)s_rx_ts_late);
     uart_printf("[genet] RX prod=%u cons=%u (ours=%u) | TX prod=%u cons=%u (ours=%u)\n",
                 (unsigned int)(rd(rdma_ring(RDMA_PROD_INDEX)) & 0xFFFFU),
                 (unsigned int)(rd(rdma_ring(RDMA_CONS_INDEX)) & 0xFFFFU),
@@ -436,6 +502,16 @@ bool genet_init(const uint8_t mac[6])
     wr(UMAC_CMD, rd(UMAC_CMD) | CMD_TX_EN | CMD_RX_EN | CMD_SPEED_1000);
     dma_barrier();
 
+    /* RX-done interrupt for timestamping: mask all, clear, unmask RX MBDONE. */
+    wr(INTRL2_0 + INTRL2_CPU_MASK_SET, 0xFFFFFFFFU);
+    wr(INTRL2_0 + INTRL2_CPU_CLEAR,    0xFFFFFFFFU);
+    s_rx_ts_seen = rd(rdma_ring(RDMA_PROD_INDEX)) & 0xFFFFU;
+    s_irq_ok = (xPortInstallIrq(GENET_IRQ0_INTID, (uint8_t)GIC_PRIO_TIMESTAMP, genet_isr) == 0);
+    wr(INTRL2_0 + INTRL2_CPU_MASK_CLEAR, UMAC_IRQ_RXDMA_MBDONE);
+    uart_printf("[genet] RX timestamp IRQ: INTID %u prio 0x%x -> %s\n",
+                (unsigned int)GENET_IRQ0_INTID, (unsigned int)GIC_PRIO_TIMESTAMP,
+                s_irq_ok ? "installed" : "FAILED (poll-time stamps only)");
+
     return true;
 }
 
@@ -496,12 +572,18 @@ bool genet_send(const uint8_t *frame, uint16_t len)
 
     dma_barrier();
     s_tx_prod++;
-    wr(tdma_ring(TDMA_PROD_INDEX), s_tx_prod & 0xFFFFU);
+    {
+        uint64_t daif;
+        __asm__ volatile("mrs %0, daif\n\tmsr daifset, #2" : "=r"(daif) :: "memory");
+        s_tx_ts = cntpct();                      /* TX timestamp = doorbell */
+        wr(tdma_ring(TDMA_PROD_INDEX), s_tx_prod & 0xFFFFU);
+        __asm__ volatile("msr daif, %0" :: "r"(daif) : "memory");
+    }
     dma_barrier();
     return true;
 }
 
-bool genet_recv(uint8_t *buf, uint16_t *len)
+bool genet_recv(uint8_t *buf, uint16_t *len, uint64_t *ts)
 {
     for (;;)
     {
@@ -514,6 +596,18 @@ bool genet_recv(uint8_t *buf, uint16_t *len)
 
         uint32_t i = s_rx_cons % RX_DESCS;
         uint32_t status = rd(rx_desc(i, 0));
+
+        /* If the ISR hasn't stamped this descriptor yet, stamp it now. */
+        {
+            uint64_t daif;
+            __asm__ volatile("mrs %0, daif\n\tmsr daifset, #2" : "=r"(daif) :: "memory");
+            if ((uint32_t)(s_rx_ts_seen - s_rx_cons) == 0U)
+            {
+                rx_stamp_new(false);
+            }
+            if (ts != NULL) { *ts = s_rx_ts[i]; }
+            __asm__ volatile("msr daif, %0" :: "r"(daif) : "memory");
+        }
         uint16_t rlen = (uint16_t)((status >> DMA_BD_LENGTH_SHIFT) & DMA_BD_LENGTH_MASK);
 
         /* Hand the buffer back to the ring whatever we decide about the frame. */

@@ -54,7 +54,17 @@
 #define configUSE_LWIP                 1   /* FlintRTOS+LwIP TCP/IP (NO_SYS)  */
 #endif
 #define configUSE_CLI                  0   /* FlintRTOS-CLI over UART         */
-#define configUSE_CORE_MQTT            0   /* coreMQTT client                */
+#ifndef configUSE_CORE_MQTT
+#define configUSE_CORE_MQTT            1   /* coreMQTT device client (NO_SYS) */
+#endif
+/* MQTT broker for the device client (plain TCP, no auth: a public test
+   broker - anyone can read the topics and send commands). */
+#ifndef configMQTT_BROKER_HOST
+#define configMQTT_BROKER_HOST         "test.mosquitto.org"
+#endif
+#ifndef configMQTT_BROKER_PORT
+#define configMQTT_BROKER_PORT         1883
+#endif
 #define configUSE_CORE_HTTP            0   /* coreHTTP client                */
 #ifndef configUSE_PTP
 #define configUSE_PTP                  1   /* IEEE 1588 PTP slave (OS mode)   */

@@ -46,6 +46,23 @@
 /* ARM generic timer: physical non-secure EL1 timer PPI -> GIC INTID 30. */
 #define TIMER_IRQ_INTID       (30U)
 
+/* GENET (bcm2711.dtsi: GIC_SPI 157/158, level-high) -> INTID = SPI + 32. */
+#define GENET_IRQ0_INTID      (189U)     /* INTRL2_0: default ring 16 RX/TX */
+#define GENET_IRQ1_INTID      (190U)     /* INTRL2_1: priority rings (unused) */
+
+/*
+ * GIC priorities (lower value = more urgent). Two bands:
+ *   - KERNEL band (>= GIC_PRIO_KERNEL): the scheduler tick. Masked while the
+ *     console holds its lock, so a task is never preempted mid-message.
+ *   - TIMESTAMP band (< GIC_PRIO_KERNEL): the GENET RX timestamping ISR. Never
+ *     masked by the console, so PTP timestamps are not delayed by printing.
+ *     These ISRs must not call kernel APIs or print.
+ */
+#define GIC_PRIO_TIMESTAMP    (0x80U)
+#define GIC_PRIO_KERNEL       (0xA0U)
+#define GICC_PMR_OPEN         (0xF0U)
+#define GICC_PMR_REG          (GICC_BASE + 0x004UL)
+
 static inline void mmio_write32(uintptr_t addr, uint32_t value)
 {
     *(volatile uint32_t *)addr = value;

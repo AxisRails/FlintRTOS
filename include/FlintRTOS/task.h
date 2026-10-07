@@ -52,6 +52,18 @@ BaseType_t  vTaskPriorityDisinherit(TaskHandle_t xMutexHolder);
 void        vTaskSetMutexInheritance(BaseType_t xEnable);
 BaseType_t  xTaskGetMutexInheritance(void);
 
+/* Diagnostics snapshot of every task (stack free is the painted high-water
+ * mark: words never touched since creation). Returns entries written. */
+typedef struct
+{
+    const char *pcName;
+    UBaseType_t uxPriority;      /* current (may be inherited) */
+    UBaseType_t uxBasePriority;
+    uint32_t    ulStackDepth;    /* words */
+    uint32_t    ulStackFree;     /* words never used */
+} TaskSnapshot_t;
+UBaseType_t uxTaskGetSnapshot(TaskSnapshot_t *pxArray, UBaseType_t uxMax);
+
 #define taskYIELD()                 portYIELD()
 #define taskENTER_CRITICAL()        portENTER_CRITICAL()
 #define taskEXIT_CRITICAL()         portEXIT_CRITICAL()

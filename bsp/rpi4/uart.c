@@ -24,17 +24,28 @@ static void delay_cycles(uint32_t n)
  * of another message, producing garbled output. Masking IRQs for the duration
  * of one message makes each line atomic. Save/restore of DAIF nests correctly,
  * so it is safe to call from IRQ context (where I is already masked) too. */
+/*
+ * Console lock. Raising the GIC priority mask to GIC_PRIO_KERNEL blocks the
+ * scheduler tick (so a message is never interleaved with another task's) but
+ * leaves the higher-urgency timestamp band open: the GENET RX ISR still runs
+ * mid-print, so PTP timestamps are not delayed by up to a line of 115200 baud.
+ * Before the GIC is up, IRQs are masked by DAIF anyway, so this is harmless.
+ */
 static inline uint64_t uart_lock(void)
 {
-    uint64_t daif;
-    __asm__ volatile("mrs %0, daif" : "=r"(daif));
-    __asm__ volatile("msr daifset, #2" ::: "memory");  /* mask IRQ (I bit) */
-    return daif;
+    uint64_t old = (uint64_t)mmio_read32(GICC_PMR_REG);
+    if (old > GIC_PRIO_KERNEL)
+    {
+        mmio_write32(GICC_PMR_REG, GIC_PRIO_KERNEL);
+    }
+    __asm__ volatile("dsb sy\n\tisb" ::: "memory");
+    return old;
 }
 
-static inline void uart_unlock(uint64_t daif)
+static inline void uart_unlock(uint64_t old)
 {
-    __asm__ volatile("msr daif, %0" :: "r"(daif) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+    mmio_write32(GICC_PMR_REG, (uint32_t)old);
 }
 
 /* --- Bring-up debug: raw output to BOTH UARTs -----------------------------

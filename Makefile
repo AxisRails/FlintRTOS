@@ -35,9 +35,10 @@ LWIP_BUILD_SRCS := $(LWIP_SRCS)
 ifeq ($(LWIP_OS),1)
 INCLUDES += $(MQTT_INC) $(PTP_INC)
 LWIP_DEFS := -DFLINT_LWIP_OS
-LWIP_BUILD_SRCS += $(LWIP_API) $(MQTT_SRCS) $(PTP_SRCS) demo/rpi4/net_demo_os.c
+LWIP_BUILD_SRCS += $(LWIP_API) $(MQTT_SRCS) $(MQTT_SOCK_SRCS) $(PTP_SRCS) port/ptp/ptp_slave.c demo/rpi4/net_demo_os.c
 else
-LWIP_BUILD_SRCS += demo/rpi4/net_demo.c
+INCLUDES += $(PTP_INC) $(MQTT_INC)
+LWIP_BUILD_SRCS += $(PTP_SRCS) port/ptp/ptp_lwip_raw.c $(MQTT_SRCS) $(MQTT_APP_SRCS) demo/rpi4/net_demo.c
 endif
 endif
 
@@ -53,6 +54,7 @@ LDFLAGS  := -T boot/rpi4/linker.ld -nostdlib --gc-sections
 C_SRCS := \
     boot/rpi4/boot.c \
     bsp/rpi4/uart.c \
+    bsp/rpi4/mailbox.c \
     kernel/list.c \
     kernel/tasks.c \
     kernel/queue.c \

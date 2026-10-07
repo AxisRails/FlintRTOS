@@ -72,6 +72,13 @@ static volatile BaseType_t  xSchedulerRunning = pdFALSE;
 static void prvIdleTask(void *pvParameters);
 static void prvInitialiseTaskLists(void);
 
+/* Registry of every created task (tasks are never deleted), for diagnostics. */
+#ifndef configMAX_TASKS
+#define configMAX_TASKS  (16U)
+#endif
+static TCB_t       *pxTaskRegistry[configMAX_TASKS];
+static UBaseType_t  uxRegisteredTasks = 0U;
+
 static void prvAddTaskToReadyList(TCB_t *pxTCB)
 {
     if (pxTCB->uxPriority > uxTopReadyPriority)
@@ -162,6 +169,11 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
     taskENTER_CRITICAL();
     {
         uxCurrentNumberOfTasks++;
+        if (uxRegisteredTasks < (UBaseType_t)configMAX_TASKS)
+        {
+            pxTaskRegistry[uxRegisteredTasks] = pxNewTCB;
+            uxRegisteredTasks++;
+        }
         if (pxCurrentTCB == NULL) { pxCurrentTCB = pxNewTCB; }
         prvAddTaskToReadyList(pxNewTCB);
     }
@@ -441,6 +453,33 @@ void vTaskDelay(TickType_t xTicksToDelay)
 UBaseType_t uxTaskGetNumberOfTasks(void)     { return uxCurrentNumberOfTasks; }
 TickType_t  xTaskGetTickCount(void)          { return xTickCount; }
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (TaskHandle_t)pxCurrentTCB; }
+
+/* Unused stack = painted words still intact, counted up from the low end. */
+static uint32_t prvStackHighWater(const TCB_t *pxTCB)
+{
+    uint32_t n = 0U;
+    while ((n < pxTCB->uxStackDepth) && (pxTCB->pxStack[n] == FLINT_STACK_FILL))
+    {
+        n++;
+    }
+    return n;
+}
+
+UBaseType_t uxTaskGetSnapshot(TaskSnapshot_t *pxArray, UBaseType_t uxMax)
+{
+    UBaseType_t n = 0U;
+    for (UBaseType_t i = 0U; (i < uxRegisteredTasks) && (n < uxMax); i++)
+    {
+        const TCB_t *t = pxTaskRegistry[i];
+        pxArray[n].pcName         = t->pcTaskName;
+        pxArray[n].uxPriority     = t->uxPriority;
+        pxArray[n].uxBasePriority = t->uxBasePriority;
+        pxArray[n].ulStackDepth   = t->uxStackDepth;
+        pxArray[n].ulStackFree    = prvStackHighWater(t);
+        n++;
+    }
+    return n;
+}
 
 static void prvIdleTask(void *pvParameters)
 {

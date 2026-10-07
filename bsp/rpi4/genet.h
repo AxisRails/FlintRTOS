@@ -3,7 +3,7 @@
  *
  * Public interface used by the lwIP netif (port/lwip/netif/flint_netif.c).
  *
- * STATUS: build-verified, hardware bring-up pending. The register map and DMA
+ * STATUS: validated on hardware (DHCP over 1000BASE-T). The register map and DMA
  * ring logic follow the published BCM2711 GENET v5 layout (as used by the Linux
  * bcmgenet driver and bare-metal ports). On real hardware, first validate MDIO
  * PHY access and the RX/TX descriptor rings.
@@ -29,10 +29,18 @@ bool genet_send(const uint8_t *frame, uint16_t len);
  * into buf, sets *len to the frame length, and returns true. Returns false if
  * no frame is pending. (An interrupt-driven path can replace polling later.)
  */
-bool genet_recv(uint8_t *buf, uint16_t *len);
+bool genet_recv(uint8_t *buf, uint16_t *len, uint64_t *ts);
+
+/* ts (optional) receives the frame's RX timestamp in CNTPCT ticks, taken in
+ * the GENET RX-done interrupt. genet_last_tx_stamp() returns the CNTPCT at
+ * which the most recent frame's TX DMA was kicked. */
+uint64_t genet_last_tx_stamp(void);
 
 /* True once the PHY reports link up. */
 bool genet_link_up(void);
+
+/* Program the MAC for the negotiated speed/duplex; call when link comes up. */
+void genet_adjust_link(void);
 
 /* Bring-up diagnostics (print over UART): GENET revision, MDIO PHY discovery,
  * link/autoneg state, and DMA ring producer/consumer indices. */

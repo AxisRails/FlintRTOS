@@ -154,28 +154,85 @@ MQTT publish to `flint/status`. The full chain **compiles and links** into a 193
 
 ### PTP / IEEE 1588 (time sync)
 
-`configUSE_PTP` (OS mode) adds an **IEEE-1588 ordinary-clock slave**
-(`port/ptp/`). Rather than port the POSIX-only **ptpd** daemon (vendored under
-`third_party/ptpd/` for reference), FlintRTOS **reuses ptpd's OS-independent
-IEEE-1588 core** — its exact wire structures, constants, and `def/` field
-definitions (`ptp_datatypes.h` et al., which compile bare-metal) and its time
-arithmetic — and supplies a FlintRTOS `dep/` layer: UDP over lwIP (event 319 /
-general 320, multicast 224.0.1.129 via IGMP), an integer PI servo, and a clock
-disciplined from the ARM generic-timer counter. `ptp_slave.c` runs the
-Sync/Follow_Up/Delay_Req/Delay_Resp exchange, computes offset & mean-path-delay,
-and steps the clock (software timestamps; GENET hardware timestamps are the
-accuracy upgrade). Compiles and links into the OS-mode image.
+FlintRTOS runs an **IEEE 1588-2008 ordinary-clock slave** (`port/ptp/`) in the
+default NO_SYS networking image. It keeps ptpd's OS-independent data model
+(`third_party/ptpd/`: wire structures, constants, time arithmetic) and adds:
 
-Build matrix (all verified to link):
+| Piece | File | What it does |
+|---|---|---|
+| Protocol engine | `ptp_core.c` | E2E Sync/Follow_Up/Delay_Req/Delay_Resp, correctionField, BMC dataset comparison over Announce with receipt timeout, median delay filter, step-epoch guard, UTC display |
+| Servo | `ptp_servo.c` | integer PI (linuxptp-style UNLOCKED → STEPPED → LOCKED), frequency estimate from two samples, outlier rejection |
+| Clock | `ptp_clock.c` | piecewise-linear clock on CNTPCT (54 MHz, 18.5 ns) with phase step + ppb frequency adjust, no floating point |
+| NO_SYS transport | `ptp_lwip_raw.c` | raw UDP 319/320, IGMP join 224.0.1.129, **driver timestamps** |
+| OS transport | `ptp_slave.c` | same engine over BSD sockets (socket-level timestamps) |
+
+**Timestamping.** The Pi 4B's GENET MAC and BCM54213PE PHY have no IEEE 1588
+unit, so timestamps are software, taken as close to the wire as possible: RX in
+the GENET `RXDMA_MBDONE` interrupt (GIC SPI 157 → INTID 189), TX at the DMA
+doorbell. The GIC is split into two priority bands: the scheduler tick sits in
+the *kernel* band, which the console lock masks via `GICC_PMR`; the GENET
+timestamp ISR sits in a higher *timestamp* band that nothing but short DAIF
+critical sections can delay, so printing never skews a timestamp.
+
+**Verified:** `tests/ptp_sim.c` closes the loop between the real engine/servo/
+clock and a simulated two-step ptp4l master (oscillator error up to 450 ppm,
+8–20 µs timestamp jitter). It locks within 3 Syncs and holds the true offset
+to under 5 µs worst-case at 8 µs jitter (`ctest`: `ptp_sim_*`). Hardware run
+against ptp4l: see `sdcard/README-BRINGUP.md`.
+
+### MQTT device client (coreMQTT over lwIP raw TCP)
+
+The default image runs a **coreMQTT v2.3.1** client inside the same NO_SYS
+network task as DHCP and PTP, connecting to `configMQTT_BROKER_HOST`
+(default `test.mosquitto.org:1883`, set in `demo/rpi4/FlintRTOSConfig.h`).
+`<id>` is `flint-` + the board serial read from the VideoCore mailbox, which
+also supplies the factory MAC address for the netif.
+
+| Topic | When | Payload |
+|---|---|---|
+| `flint/<id>/status` | on connect, retained | `{"state":"online","ip":...,"uptime_s":...}`; Last Will `{"state":"offline"}` |
+| `flint/<id>/ptp` | 1 Hz | `{"state":"LOCKED","offset_ns":...,"delay_ns":...,"freq_ppb":...,"utc":...}` |
+| `flint/<id>/stats` | 10 s | uptime, heap free/min, GENET IRQ count, per-task priority and stack high-water |
+| `flint/<id>/cmd` | subscribed | `ping`, `uptime`, `stats`, `ptp`, `led on|off|toggle` (green ACT LED), `help` |
+| `flint/<id>/reply` | per command | JSON answer |
+
+| Piece | File |
+|---|---|
+| Application (topics, commands, reconnect with back-off 2 s → 60 s) | `port/mqtt/flint_mqtt.c` |
+| Raw-TCP transport: DNS, connect, RX ring with lwIP flow control, send back-pressure | `port/mqtt/transport_raw.c` |
+| Transport / platform seams (same app runs on host and Pi) | `port/mqtt/mqtt_transport.h`, `mqtt_platform.h` |
+| Pi platform: LED (GPIO42), PTP + RTOS JSON, network pump | `demo/rpi4/mqtt_platform.c` |
+| Bounded JSON writer | `port/mqtt/jsonw.c` |
+| Task snapshot API (stack high-water from the painted stack) | `uxTaskGetSnapshot()` in `kernel/tasks.c` |
+| Board MAC + serial | `bsp/rpi4/mailbox.c` |
+
+NO_SYS lwIP only moves when its owner polls it, while coreMQTT calls block
+(waiting for CONNACK, a full send window). Whenever the transport waits it
+calls `fm_plat_pump()` → `net_pump()`: one iteration of the network loop, so
+DHCP, ARP, TCP, PTP and the UDP echo keep running underneath a blocking MQTT
+call.
+
+**Verified (`ctest`):** `mqtt_e2e_posix` runs the app over POSIX sockets and
+`mqtt_e2e_lwip_tap` runs the app + `transport_raw.c` + coreMQTT + lwIP NO_SYS
+over a Linux TAP interface. Both run against a real mosquitto broker and check
+the retained status, telemetry, all 9 command replies and the Last Will on
+connection loss. Reconnect after a broker restart was also checked.
+
+> The public test broker has no authentication: anyone who knows the topic
+> can read it and send commands (the worst a command can do is toggle the
+> LED). TLS + credentials is the next step (mbedTLS under `transport_raw.c`).
+
+Build matrix (all verified to link, zero warnings):
 
 | Build | Image | Contents |
 |---|---|---|
-| `make LWIP=0` | ~9 KB | kernel + scheduler only |
-| `make` | ~144 KB | + lwIP NO_SYS + GENET (UDP echo) |
-| `make LWIP_OS=1` | ~202 KB | + netconn/sockets + coreMQTT + PTP slave |
+| `make LWIP=0` | ~18 KB | kernel + scheduler + priority-inversion demo |
+| `make` | ~195 KB | + lwIP NO_SYS + GENET (DHCP, UDP echo) + PTP slave (driver timestamps) + MQTT device client |
+| `make LWIP_OS=1` | ~223 KB | + netconn/sockets + coreMQTT + PTP slave (socket timestamps) |
 
-**Next (hardware):** validate the GENET driver on a real Pi (then packets move and the UDP echo /
-MQTT publish are live); add TLS (mbedTLS) under the coreMQTT transport for secure MQTT.
+**Hardware status:** GENET + lwIP DHCP validated on a Pi 4B (1000BASE-T).
+**Next:** PTP and MQTT validation on hardware; TLS (mbedTLS) under the MQTT
+transport; OS-mode bring-up.
 
 ## Other ecosystem libraries (manifest 3 — roadmap)
 

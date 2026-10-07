@@ -101,3 +101,87 @@ Reply with what you see. Next steps once minimal is green:
 - `make` (144 KB, lwIP NO_SYS + GENET) → validate the **GENET Ethernet driver**
   (the one hardware-unvalidated seam) with the UDP echo on port 7.
 - `make LWIP_OS=1` (202 KB) → sockets + coreMQTT publish + PTP slave.
+
+
+---
+
+## Networking image (`make`, default) — DHCP + PTP
+
+`kernel8.img` in this folder is now the networking build: lwIP (NO_SYS) + GENET
++ DHCP + IEEE 1588 slave. Plug in Ethernet, boot, and expect:
+
+```
+[genet] RX timestamp IRQ: INTID 189 prio 0x80 -> installed
+*** [net] DHCP LEASE ACQUIRED ***
+[net]   IP  = 192.168.20.x
+[ptp] UDP 319/320 open, IGMP join 224.0.1.129 -> ok
+[ptp] slave clockIdentity 02005eff.fe000001  domain 0, E2E, UDPv4 multicast 224.0.1.129
+[ptp] listening for a master (Announce)... start ptp4l on the LAN
+```
+
+### Start a PTP master on a Linux machine on the same LAN
+
+```sh
+sudo apt install linuxptp            # Debian/Ubuntu/Raspberry Pi OS
+ip -br link                          # find the wired interface, e.g. eth0 / enp3s0
+sudo ptp4l -i eth0 -S -m             # -S = software timestamps, -m = log to stdout
+```
+
+ptp4l listens for ~6 s, finds no better clock, and prints
+`assuming the grand master role`. From then on it multicasts Sync/Follow_Up
+every second and answers Delay_Req. If the Linux box has a firewall, allow
+UDP 319 and 320 (`sudo ufw allow 319:320/udp`). A Wi-Fi-only laptop works but
+Wi-Fi adds hundreds of µs of jitter — wired is better.
+
+### What the Pi should print
+
+```
+[ptp] selected master: port xxxxxxxx.xxxxxxxx/1  gm ...  prio1=128 class=248 ...
+[ptp] UNLOCKED -> STEPPED  offset=-1790... ns  delay=-1 ns  freq=0 ppb | 2026-..-.. UTC
+[ptp] STEPPED -> STEPPED  offset=... ns  delay=-1 ns  freq=-3xxxx ppb | ...
+[ptp] STEPPED -> LOCKED   offset=... ns  delay=4xxxx ns  freq=... ppb | ...
+[ptp] #4 offset=... ns  delay=... ns  freq=... ppb | 2026-09-23 07:21:12.345678 UTC
+...
+[ptp] ---- last 16: mean=... ns  rms=... ns  max|offset|=... ns ----
+```
+
+`freq` settles at the Pi crystal's error against the master (typically tens of
+ppm); `offset` should stay within tens of µs with software timestamps on both
+ends. Every 10 s the `[genet] irq=N` line should show N climbing — if it stays
+at 0, RX timestamps fall back to poll time (up to 1 ms late) and the offset
+will be much noisier; paste that line if you see it.
+
+
+---
+
+## MQTT (default image)
+
+After the DHCP lease the Pi connects to `test.mosquitto.org:1883` and prints
+its topic prefix, e.g.:
+
+```
+[netif] MAC dc:a6:32:xx:xx:xx (board MAC from firmware)
+[net]   DNS = 192.168.20.1 (from DHCP)
+[mqtt] client id flint-10000000abcdef12
+[mqtt] broker test.mosquitto.org:1883  ->  mosquitto_sub -h test.mosquitto.org -t 'flint/flint-10000000abcdef12/#' -v
+[mqtt] connecting to test.mosquitto.org
+[mqtt] connected as flint-10000000abcdef12
+[mqtt] subscribed to flint/flint-10000000abcdef12/cmd
+```
+
+The MAC now comes from the board, so the router hands out a **new IP** the
+first time (the old 192.168.20.35 lease belonged to the placeholder MAC).
+
+On your PC (install Mosquitto for Windows, or use MQTT Explorer pointed at
+`test.mosquitto.org`), with `<id>` from the log:
+
+```sh
+mosquitto_sub -h test.mosquitto.org -t "flint/<id>/#" -v
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m ping
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "led toggle"
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m stats
+```
+
+Unplug the Ethernet cable: within ~45 s (1.5 x keep-alive) the broker
+publishes the Last Will `{"state":"offline"}` on `flint/<id>/status`. Plug it
+back in and the Pi reconnects on its own (back-off 2 s, doubling to 60 s).

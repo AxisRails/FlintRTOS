@@ -52,6 +52,14 @@ void vPortExitCritical(void);
 #define portYIELD()  __asm__ volatile("svc #0" ::: "memory")
 
 void vPortYieldFromISR(void);
+
+/* Route a GIC SPI to CPU0 (level-triggered) at the given priority and call
+   handler from the IRQ vector. Returns 0 on success, -1 if the table is full. */
+typedef void (*PortIrqHandler_t)(void);
+int  xPortInstallIrq(uint32_t intid, uint8_t priority, PortIrqHandler_t handler);
+
+/* Count of IRQs dispatched to installed (non-timer) handlers - diagnostics. */
+uint32_t ulPortIrqCount(uint32_t intid);
 #define portYIELD_FROM_ISR(xSwitch)  do { if ((xSwitch) != pdFALSE) { vPortYieldFromISR(); } } while (0)
 
 /* --- Task function prototype ---------------------------------------------- */

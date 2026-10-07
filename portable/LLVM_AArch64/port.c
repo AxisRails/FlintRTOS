@@ -78,6 +78,8 @@ void vPortExitCritical(void)
     }
 }
 
+static void gicd_set_byte(uint32_t bank, uint32_t intid, uint8_t val);
+
 /* --- ARM generic timer (physical, EL1) ------------------------------------ */
 static uint64_t ullTimerReloadTicks = 0U;
 
@@ -119,15 +121,75 @@ void vPortSetupTimerInterrupt(void)
     /* Enable the timer PPI (INTID 30) in GICD_ISENABLER0. */
     mmio_write32(GICD_BASE + 0x100U, (1U << TIMER_IRQ_INTID));
     /* Priority for INTID30 (GICD_IPRIORITYR): mid priority. */
-    mmio_write32(GICD_BASE + 0x400U + (TIMER_IRQ_INTID & ~3U),
-                 (uint32_t)(0xA0U << ((TIMER_IRQ_INTID % 4U) * 8U)));
+    gicd_set_byte(0x400U, TIMER_IRQ_INTID, (uint8_t)GIC_PRIO_KERNEL);
 
     /* CPU interface: priority mask + enable. */
-    mmio_write32(GICC_BASE + 0x004U, 0xF0U);         /* GICC_PMR              */
+    mmio_write32(GICC_BASE + 0x004U, GICC_PMR_OPEN); /* GICC_PMR              */
     mmio_write32(GICC_BASE + 0x000U, 1U);            /* GICC_CTLR = Enable    */
 
     arm_timer(ullTimerReloadTicks);
     uart_printf("[port] generic timer armed; waiting for first tick IRQ...\n");
+}
+
+/* --- Installable device IRQs (GIC SPIs) ----------------------------------- */
+#define PORT_MAX_IRQS   (4U)
+
+typedef struct
+{
+    uint32_t          intid;
+    PortIrqHandler_t  handler;
+    volatile uint32_t count;
+} PortIrqSlot_t;
+
+static PortIrqSlot_t xIrqTable[PORT_MAX_IRQS];
+static uint32_t      uxIrqSlots = 0U;
+
+/* Read-modify-write one byte lane of a 32-bit GICD register bank. */
+static void gicd_set_byte(uint32_t bank, uint32_t intid, uint8_t val)
+{
+    uintptr_t reg   = GICD_BASE + bank + (uintptr_t)(intid & ~3U);
+    uint32_t  shift = (intid % 4U) * 8U;
+    uint32_t  v     = mmio_read32(reg);
+    v &= ~(0xFFU << shift);
+    v |= ((uint32_t)val << shift);
+    mmio_write32(reg, v);
+}
+
+int xPortInstallIrq(uint32_t intid, uint8_t priority, PortIrqHandler_t handler)
+{
+    int result = -1;
+    portENTER_CRITICAL();
+    if ((uxIrqSlots < PORT_MAX_IRQS) && (handler != NULL) && (intid >= 32U) && (intid < 1020U))
+    {
+        xIrqTable[uxIrqSlots].intid   = intid;
+        xIrqTable[uxIrqSlots].handler = handler;
+        xIrqTable[uxIrqSlots].count   = 0U;
+        uxIrqSlots++;
+
+        gicd_set_byte(0x400U, intid, priority);          /* GICD_IPRIORITYR */
+        gicd_set_byte(0x800U, intid, 0x01U);             /* GICD_ITARGETSR: CPU0 */
+        {
+            /* GICD_ICFGR: 2 bits per INTID, bit1 = 0 -> level-sensitive. */
+            uintptr_t reg = GICD_BASE + 0xC00U + (uintptr_t)((intid / 16U) * 4U);
+            uint32_t  v   = mmio_read32(reg);
+            v &= ~(2U << ((intid % 16U) * 2U));
+            mmio_write32(reg, v);
+        }
+        mmio_write32(GICD_BASE + 0x100U + (uintptr_t)((intid / 32U) * 4U),
+                     1U << (intid % 32U));               /* GICD_ISENABLERn */
+        result = 0;
+    }
+    portEXIT_CRITICAL();
+    return result;
+}
+
+uint32_t ulPortIrqCount(uint32_t intid)
+{
+    for (uint32_t i = 0U; i < uxIrqSlots; i++)
+    {
+        if (xIrqTable[i].intid == intid) { return xIrqTable[i].count; }
+    }
+    return 0U;
 }
 
 /* Called from the asm IRQ entry (portASM.S) after context is saved.
@@ -138,7 +200,12 @@ void vPortIrqHandlerC(void)
     uint32_t iar = mmio_read32(GICC_BASE + 0x00CU);  /* GICC_IAR */
     uint32_t intid = iar & 0x3FFU;
 
-    if (ulFirstIrq == 0U)
+    if (intid >= 1020U)
+    {
+        return;                                      /* spurious: no EOI */
+    }
+
+    if ((ulFirstIrq == 0U) && (intid == TIMER_IRQ_INTID))
     {
         ulFirstIrq = 1U;
         uart_printf("[port] first IRQ taken: INTID=%u (timer=%u) - IRQ path is live\n",
@@ -150,6 +217,18 @@ void vPortIrqHandlerC(void)
         arm_timer(ullTimerReloadTicks);              /* reload for next tick  */
         xTaskIncrementTick();
         vTaskSwitchContext();                        /* pick next task        */
+    }
+    else
+    {
+        for (uint32_t i = 0U; i < uxIrqSlots; i++)
+        {
+            if (xIrqTable[i].intid == intid)
+            {
+                xIrqTable[i].count++;
+                xIrqTable[i].handler();
+                break;
+            }
+        }
     }
 
     mmio_write32(GICC_BASE + 0x010U, iar);           /* GICC_EOIR             */

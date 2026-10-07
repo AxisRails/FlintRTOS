@@ -71,15 +71,25 @@ MQTT_INC := -I$(MQTT_DIR)/include -I$(MQTT_DIR)/interface -Iport/mqtt
 MQTT_SRCS := \
     $(MQTT_DIR)/core_mqtt.c \
     $(MQTT_DIR)/core_mqtt_serializer.c \
-    $(MQTT_DIR)/core_mqtt_state.c \
-    port/mqtt/transport_lwip.c
+    $(MQTT_DIR)/core_mqtt_state.c
+# OS mode: BSD-socket transport.
+MQTT_SOCK_SRCS := port/mqtt/transport_lwip.c
+# NO_SYS: raw-TCP transport + the device application (status/LWT, PTP and
+# RTOS telemetry, command topic).
+MQTT_APP_SRCS := \
+    port/mqtt/transport_raw.c \
+    port/mqtt/flint_mqtt.c \
+    port/mqtt/jsonw.c \
+    demo/rpi4/mqtt_platform.c
 
 # PTP (manifest 3) - IEEE 1588 ordinary-clock slave. Reuses ptpd's data model
-# (third_party/ptpd) with a FlintRTOS dep layer. OS mode only (sockets).
+# (third_party/ptpd) with a FlintRTOS dep layer. ptp_core is transport-neutral;
+# the Makefile adds ptp_lwip_raw.c (NO_SYS, driver timestamps) or ptp_slave.c
+# (OS mode, sockets).
 PTP_INC := -Ithird_party/ptpd/src -Iport/ptp
 PTP_SRCS := \
     port/ptp/ptp_time.c \
     port/ptp/ptp_msg.c \
     port/ptp/ptp_servo.c \
     port/ptp/ptp_clock.c \
-    port/ptp/ptp_slave.c
+    port/ptp/ptp_core.c

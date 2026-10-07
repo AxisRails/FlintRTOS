@@ -68,7 +68,7 @@ void vQueueDelete(QueueHandle_t xQueue) { vPortFree(xQueue); }
 
 static void prvCopyIn(Queue_t *pxQueue, const void *pvItem, BaseType_t xToFront)
 {
-    if (pxQueue->uxItemSize > 0U)
+    if ((pxQueue->uxItemSize > 0U) && (pvItem != NULL))
     {
         if (xToFront == pdFALSE)
         {

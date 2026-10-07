@@ -50,6 +50,13 @@
 #define MEMP_NUM_NETCONN            16
 #define PBUF_POOL_SIZE              32
 
+/* ---- TCP (MQTT) ---------------------------------------------------------- */
+#define TCP_MSS                     1460
+#define TCP_SND_BUF                 (4 * TCP_MSS)
+#define TCP_WND                     (4 * TCP_MSS)
+#define TCP_SND_QUEUELEN            ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / (TCP_MSS))
+#define LWIP_TCP_KEEPALIVE          1
+
 /* ---- Protocols ----------------------------------------------------------- */
 #define LWIP_IPV4                   1
 #define LWIP_IPV6                   1
@@ -71,6 +78,7 @@
  * copy the header instead (required, per lwIP's static assert). */
 #define IPV6_FRAG_COPYHEADER        1
 #define LWIP_DNS                    1
+#define DNS_MAX_SERVERS             2   /* filled from the DHCP lease */
 
 /* ---- Netif --------------------------------------------------------------- */
 #define LWIP_NETIF_HOSTNAME         1

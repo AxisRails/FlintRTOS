@@ -55,3 +55,55 @@ target_include_directories(flint_tests PRIVATE
 target_compile_options(flint_tests PRIVATE ${FLINT_CXX_WARNINGS})
 target_link_libraries(flint_tests PRIVATE flint_kernel flint_core_host)
 add_test(NAME unit COMMAND flint_tests)
+
+# --- PTP slave engine: closed-loop simulation against a model master --------
+# Real ptp_core + servo + clock, simulated ptp4l master, drift, delay, jitter.
+add_executable(ptp_sim
+    tests/ptp_sim.c
+    port/ptp/ptp_core.c
+    port/ptp/ptp_servo.c
+    port/ptp/ptp_clock.c
+    port/ptp/ptp_msg.c
+    port/ptp/ptp_time.c)
+target_compile_definitions(ptp_sim PRIVATE PTP_HOST_TEST)
+target_include_directories(ptp_sim PRIVATE
+    ${CMAKE_SOURCE_DIR}/port/ptp ${CMAKE_SOURCE_DIR}/third_party/ptpd/src)
+add_test(NAME ptp_sim_nominal   COMMAND ptp_sim 37000 48000 8000)
+add_test(NAME ptp_sim_fast_osc  COMMAND ptp_sim -120000 30000 20000)
+add_test(NAME ptp_sim_ideal     COMMAND ptp_sim 0 100000 0)
+add_test(NAME ptp_sim_max_slew  COMMAND ptp_sim 450000 50000 5000)
+
+# --- MQTT device app end-to-end against a real broker (needs mosquitto) -----
+# mqtt_host_test : flint_mqtt.c + coreMQTT over POSIX sockets.
+# mqtt_lwip_test : flint_mqtt.c + transport_raw.c + coreMQTT + lwIP NO_SYS,
+#                  frames over a Linux TAP (needs root + /dev/net/tun).
+set(MQTT_DIR ${CMAKE_SOURCE_DIR}/third_party/coreMQTT/source)
+set(MQTT_CORE ${MQTT_DIR}/core_mqtt.c ${MQTT_DIR}/core_mqtt_serializer.c ${MQTT_DIR}/core_mqtt_state.c)
+set(MQTT_INCS ${CMAKE_SOURCE_DIR}/port/mqtt ${MQTT_DIR}/include ${MQTT_DIR}/interface)
+find_program(MOSQUITTO_BIN mosquitto PATHS /usr/sbin /usr/local/sbin)
+find_program(MOSQUITTO_SUB mosquitto_sub)
+if(MOSQUITTO_BIN AND MOSQUITTO_SUB)
+    add_executable(mqtt_host_test tests/mqtt_host_test.c
+        port/mqtt/flint_mqtt.c port/mqtt/jsonw.c ${MQTT_CORE})
+    target_include_directories(mqtt_host_test PRIVATE ${MQTT_INCS})
+    add_test(NAME mqtt_e2e_posix
+             COMMAND sh ${CMAKE_SOURCE_DIR}/tests/mqtt_host_test.sh $<TARGET_FILE:mqtt_host_test> posix 18830)
+
+    if(EXISTS /dev/net/tun)
+        set(LWIPSRC ${CMAKE_SOURCE_DIR}/third_party/lwip/src)
+        file(GLOB LWIP_IPV4 ${LWIPSRC}/core/ipv4/*.c)
+        add_executable(mqtt_lwip_test tests/mqtt_lwip_test.c
+            port/mqtt/transport_raw.c port/mqtt/flint_mqtt.c port/mqtt/jsonw.c ${MQTT_CORE}
+            ${LWIPSRC}/core/init.c ${LWIPSRC}/core/def.c ${LWIPSRC}/core/dns.c
+            ${LWIPSRC}/core/inet_chksum.c ${LWIPSRC}/core/ip.c ${LWIPSRC}/core/mem.c
+            ${LWIPSRC}/core/memp.c ${LWIPSRC}/core/netif.c ${LWIPSRC}/core/pbuf.c
+            ${LWIPSRC}/core/raw.c ${LWIPSRC}/core/stats.c ${LWIPSRC}/core/sys.c
+            ${LWIPSRC}/core/tcp.c ${LWIPSRC}/core/tcp_in.c ${LWIPSRC}/core/tcp_out.c
+            ${LWIPSRC}/core/timeouts.c ${LWIPSRC}/core/udp.c ${LWIP_IPV4}
+            ${LWIPSRC}/netif/ethernet.c)
+        target_include_directories(mqtt_lwip_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/tests/lwip_host ${LWIPSRC}/include ${MQTT_INCS})
+        add_test(NAME mqtt_e2e_lwip_tap
+                 COMMAND sh ${CMAKE_SOURCE_DIR}/tests/mqtt_host_test.sh $<TARGET_FILE:mqtt_lwip_test> lwip 18832)
+    endif()
+endif()
