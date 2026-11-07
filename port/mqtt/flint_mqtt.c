@@ -45,6 +45,9 @@ typedef struct
     char      t_stats[TOPIC_MAX];
     char      t_cmd[TOPIC_MAX];
     char      t_reply[TOPIC_MAX];
+    char      t_crash[TOPIC_MAX];
+    bool      crash_published;
+    bool      action_pending;
 
     bool      reply_pending;
     char      reply[REPLY_MAX];
@@ -112,6 +115,8 @@ static void build_status(JsonW *w, const char *state)
     jw_str(w, "ip", fm_plat_ip());
     jw_str(w, "fw", "FlintRTOS / lwIP 2.2.0 / coreMQTT 2.3.1");
     jw_u32(w, "uptime_s", (now_ms() - g.boot_ms) / 1000U);
+    jw_str(w, "reset_reason", fm_plat_reset_reason());
+    jw_u32(w, "boot_count", fm_plat_boot_count());
     jw_obj_close(w);
 }
 
@@ -126,6 +131,16 @@ static void publish_ptp(void)
 {
     size_t n = fm_plat_ptp_json(g.scratch, sizeof(g.scratch));
     if (n > 0U) { (void)publish(g.t_ptp, g.scratch, n, false); }
+}
+
+/* Retained, once per boot: why the previous run ended. */
+static void publish_crash_report(void)
+{
+    size_t n = fm_plat_crash_json(g.scratch, sizeof(g.scratch));
+    if ((n > 0U) && publish(g.t_crash, g.scratch, n, true))
+    {
+        g.crash_published = true;
+    }
 }
 
 static void publish_stats(void)
@@ -208,7 +223,13 @@ static void handle_command(const char *p, size_t len)
     }
     else if (word_eq(cmd, len, "help"))
     {
-        set_reply_simple(cmd, "commands", "ping, uptime, stats, ptp, led on|off|toggle, help");
+        set_reply_simple(cmd, "commands",
+                         "ping, uptime, stats, ptp, led on|off|toggle, bench, reboot, "
+                         "fault abort|hang|irqoff|stack|oom, help");
+    }
+    else if (fm_plat_command(cmd, g.reply, sizeof(g.reply)))
+    {
+        g.action_pending = true;          /* run any deferred action after the reply */
     }
     else
     {
@@ -317,6 +338,7 @@ static void try_connect(void)
         if (rc != MQTTSuccess) { logf2("SUBSCRIBE failed: ", MQTT_Status_strerror(rc)); }
     }
     publish_status_online();
+    if (!g.crash_published) { publish_crash_report(); }
     logf2("topics under flint/", g.id);
     g.last_ptp_ms   = now_ms();
     g.last_stats_ms = now_ms() - STATS_PERIOD_MS + 2000U;   /* first stats in 2 s */
@@ -333,6 +355,7 @@ void flint_mqtt_init(const char *client_id, const char *broker_host, uint16_t br
     make_topic(g.t_stats,  "stats");
     make_topic(g.t_cmd,    "cmd");
     make_topic(g.t_reply,  "reply");
+    make_topic(g.t_crash,  "crash");
     g.boot_ms         = now_ms();
     g.backoff_ms      = BACKOFF_MIN_MS;
     g.next_attempt_ms = now_ms();
@@ -372,6 +395,13 @@ void flint_mqtt_service(void)
     {
         g.reply_pending = false;
         (void)publish(g.t_reply, g.reply, fm_strlen(g.reply), false);
+        if (g.action_pending)
+        {
+            g.action_pending = false;
+            /* Give the reply a moment to leave before a reboot/fault. */
+            for (uint32_t i = 0U; i < 50U; i++) { fm_plat_pump(true); }
+            fm_plat_after_reply();
+        }
     }
 
     t = now_ms();

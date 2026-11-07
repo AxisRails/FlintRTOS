@@ -7,6 +7,9 @@
  *   flint/<id>/stats   10 s      uptime, heap, per-task stack high-water
  *   flint/<id>/cmd     subscribe ping | uptime | stats | ptp | led on|off|toggle | help
  *   flint/<id>/reply             answer to each command
+ *   flint/<id>/crash   retained  why the previous run ended (reset reason,
+ *                                crash details, backtrace) - once per boot
+ *   platform commands: bench | reboot | fault abort|hang|irqoff|stack|oom
  *
  * Runs entirely in the caller's context: call flint_mqtt_service() from the
  * network loop. It (re)connects with exponential back-off, drives

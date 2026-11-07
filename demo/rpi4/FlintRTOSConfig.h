@@ -70,4 +70,25 @@
 #define configUSE_PTP                  1   /* IEEE 1588 PTP slave (OS mode)   */
 #endif
 
+/* ---- Safety (kernel/flint_safety.c) ---------------------------------------*/
+/* RAM kept across a watchdog reset for the crash record (outside the image,
+   heap and stacks; never cleared by start.S). */
+#define configSAFETY_NOINIT_ADDR       (0x1FF00000UL)
+#define configSAFETY_RESET_ON_FAULT    1      /* 1: record + reboot, 0: record + halt */
+#define configSAFETY_WDOG_MS           (4000U) /* HW watchdog while the monitor runs */
+#define configSAFETY_MONITOR_MS        (250U)  /* health-monitor period              */
+/* MQTT commands that deliberately trigger each fault path (abort, hang,
+   irqoff, stack, oom) plus reboot - for testing recovery. Anyone who can
+   publish to the command topic can use them: set 0 for deployment. */
+#ifndef configFAULT_INJECTION
+#define configFAULT_INJECTION          1
+#endif
+
+/* Scheduler hook: remember which task ran last (survives a watchdog reset). */
+#ifndef __ASSEMBLER__
+#include <stdint.h>
+void flint_safety_note_switch(const char *task_name, uint32_t tick);
+#define traceTASK_SWITCHED_IN() flint_safety_note_switch(pxCurrentTCB->pcTaskName, (uint32_t)xTickCount)
+#endif
+
 #endif /* FLINTRTOS_CONFIG_H */

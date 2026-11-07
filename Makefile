@@ -45,7 +45,7 @@ endif
 SCHED_TRACE ?= 0
 
 CFLAGS   := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding -nostdlib \
-            -mgeneral-regs-only -fno-stack-protector -fno-common -fno-builtin \
+            -mgeneral-regs-only -fno-stack-protector -fno-omit-frame-pointer -fno-common -fno-builtin \
             -O2 -Wall -Wextra -Wshadow -std=c11 -DconfigUSE_LWIP=$(LWIP) -DFLINT_SCHED_TRACE=$(SCHED_TRACE) $(LWIP_DEFS) $(INCLUDES)
 ASFLAGS  := --target=$(TARGET) -mcpu=$(CPU) -ffreestanding $(INCLUDES)
 LDFLAGS  := -T boot/rpi4/linker.ld -nostdlib --gc-sections
@@ -55,6 +55,11 @@ C_SRCS := \
     boot/rpi4/boot.c \
     bsp/rpi4/uart.c \
     bsp/rpi4/mailbox.c \
+    demo/rpi4/bench.c \
+    portable/LLVM_AArch64/safety_port.c \
+    kernel/flint_timing.c \
+    kernel/flint_safety.c \
+    bsp/rpi4/pm_watchdog.c \
     kernel/list.c \
     kernel/tasks.c \
     kernel/queue.c \

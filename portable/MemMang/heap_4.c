@@ -188,6 +188,13 @@ void *pvPortMalloc(size_t xWantedSize)
         pxBlock->pxNextFreeBlock = NULL;
     }
 
+#if defined(configUSE_MALLOC_FAILED_HOOK) && (configUSE_MALLOC_FAILED_HOOK == 1)
+    if (pvReturn == NULL)
+    {
+        extern void vApplicationMallocFailedHook(void);
+        vApplicationMallocFailedHook();
+    }
+#endif
     return pvReturn;
 }
 

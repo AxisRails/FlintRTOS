@@ -3,6 +3,9 @@
  * Performs early board init, then hands off to the application main().
  */
 #include "uart.h"
+#include "FlintRTOS.h"
+#include "flint_safety.h"
+#include "pm_watchdog.h"
 
 #include <stdint.h>
 
@@ -84,6 +87,13 @@ void flint_boot(void)
     uart_puts("  FlintRTOS  -  Raspberry Pi 4 (AArch64)\n");
     uart_puts("  lean . secure . safe\n");
     uart_puts("========================================\n");
+    /* Safety: decode what the previous run left behind, re-arm the record,
+     * and arm the hardware watchdog at its maximum until the health monitor
+     * takes over (catches a hang anywhere in init). */
+    flint_safety_boot((void *)configSAFETY_NOINIT_ADDR, pm_wdog_reset_status());
+    flint_safety_print_report();
+    pm_wdog_start(PM_WDOG_MAX_MS);
+
     uart_puts("[boot] board init complete; calling main()\n");
 
     (void)main();

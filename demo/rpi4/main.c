@@ -12,14 +12,11 @@
 #include "semphr.h"
 #include "uart.h"
 
-void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
-{
-    (void)xTask;
-    uart_printf("\n*** STACK OVERFLOW in task '%s' - halting ***\n",
-                (pcTaskName != NULL) ? pcTaskName : "?");
-    taskDISABLE_INTERRUPTS();
-    for (;;) { __asm__ volatile("wfe"); }
-}
+#include "flint_safety.h"
+#include "bench.h"
+
+/* Stack-overflow and malloc-failed hooks live in the port (safety_port.c):
+   they record a crash and reset through the watchdog. */
 
 #if defined(FLINT_LWIP_OS) || (configUSE_LWIP == 1)
 /* ================= Networking build ===================================== */
@@ -34,8 +31,10 @@ static void vHeartbeat(void *pvParameters)
 {
     (void)pvParameters;
     uint32_t n = 0U;
+    int      h = flint_health_register("hb", 6000U);   /* beats every 3 s */
     for (;;)
     {
+        flint_health_checkin(h);
         uart_printf("[hb] alive (t=%u, beat %u)\n",
                     (unsigned int)xTaskGetTickCount(), n);
         n++;
@@ -46,6 +45,10 @@ static void vHeartbeat(void *pvParameters)
 int main(void)
 {
     uart_printf("[main] FlintRTOS networking demo (lwIP)\n");
+    flint_health_start();
+#if !defined(FLINT_LWIP_OS)
+    bench_start();                       /* context-switch benchmark */
+#endif
 
     (void)xTaskCreate(vHeartbeat, "hb", (uint32_t)configMINIMAL_STACK_SIZE, NULL, 1U, NULL);
 #if defined(FLINT_LWIP_OS)
@@ -140,6 +143,7 @@ int main(void)
         for (;;) { __asm__ volatile("wfe"); }
     }
 
+    flint_health_start();
     vTaskSetMutexInheritance(pdFALSE);
     uart_printf("[main] deterministic priority-inversion demo: L(1) M(2) H(3)\n");
     uart_printf("[main] PHASE 1: inheritance OFF - H must wait behind M (inversion)\n");

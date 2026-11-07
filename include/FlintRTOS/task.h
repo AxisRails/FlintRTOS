@@ -35,6 +35,9 @@ BaseType_t  xTaskRemoveFromEventList(List_t *pxEventList);
 UBaseType_t uxTaskGetNumberOfTasks(void);
 TickType_t  xTaskGetTickCount(void);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
+BaseType_t   xTaskSchedulerRunning(void);
+/* Name of xTask (NULL = the running task); "boot" before any task exists. */
+const char  *pcTaskGetName(TaskHandle_t xTask);
 
 /* Application hook invoked when a task stack overflow is detected (enabled by
  * configCHECK_FOR_STACK_OVERFLOW). The application must provide this; it should
@@ -63,6 +66,10 @@ typedef struct
     uint32_t    ulStackFree;     /* words never used */
 } TaskSnapshot_t;
 UBaseType_t uxTaskGetSnapshot(TaskSnapshot_t *pxArray, UBaseType_t uxMax);
+
+/* Fault-injection test hook (configFAULT_INJECTION): corrupt the running
+ * task's stack guard and yield, triggering the overflow detection. */
+void vTaskInjectStackOverflow(void);
 
 #define taskYIELD()                 portYIELD()
 #define taskENTER_CRITICAL()        portENTER_CRITICAL()

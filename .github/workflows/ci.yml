@@ -1,0 +1,50 @@
+# FlintRTOS CI - same gates as tools/ci.sh.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake cppcheck mosquitto mosquitto-clients
+          # The packaged broker service is not needed (tests start their own).
+          sudo systemctl stop mosquitto || true
+
+      - name: Firmware builds (zero warnings)
+        run: |
+          for cfg in LWIP=0 LWIP=1 LWIP_OS=1; do
+            rm -rf build
+            make $cfg 2>&1 | tee build.log
+            if grep -q 'warning:' build.log; then echo "::error::warnings in make $cfg"; exit 1; fi
+          done
+          rm -rf build && make LWIP=1
+
+      - name: Host tests
+        run: |
+          cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host -j
+          cd build-host && ctest --output-on-failure -E mqtt_e2e_lwip_tap
+
+      - name: MQTT over lwIP raw TCP (TAP, needs root)
+        run: cd build-host && sudo ctest --output-on-failure -R mqtt_e2e_lwip_tap
+
+      - name: MISRA ratchet
+        run: tools/misra/run_misra.sh
+
+      - name: Upload firmware and MISRA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flintrtos
+          path: |
+            build/kernel8.img
+            build/flint.elf
+            build/misra/findings.txt

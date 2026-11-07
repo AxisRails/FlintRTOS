@@ -38,6 +38,12 @@ struct tskTaskControlBlock
     char                  pcTaskName[configMAX_TASK_NAME_LEN];
 };
 
+/* Called with pxCurrentTCB = the task about to run (e.g. flint_safety's
+ * last-activity record). Defined in FlintRTOSConfig.h; empty by default. */
+#ifndef traceTASK_SWITCHED_IN
+#define traceTASK_SWITCHED_IN()
+#endif
+
 /* Stack painting value for the overflow guard (method-2 pattern check). */
 #define FLINT_STACK_FILL  ((StackType_t)0xA5A5A5A5A5A5A5A5ULL)
 
@@ -320,6 +326,7 @@ void vTaskSwitchContext(void)
         listGET_OWNER_OF_NEXT_ENTRY(pxOwner, &(xReadyTasksLists[uxPriority]));
         pxCurrentTCB = (TCB_t *)pxOwner;
     }
+    traceTASK_SWITCHED_IN();
 #if (FLINT_SCHED_TRACE == 1)
     {
         /* Small cap: the switch runs every tick, and its UART print is slower
@@ -453,6 +460,13 @@ void vTaskDelay(TickType_t xTicksToDelay)
 UBaseType_t uxTaskGetNumberOfTasks(void)     { return uxCurrentNumberOfTasks; }
 TickType_t  xTaskGetTickCount(void)          { return xTickCount; }
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (TaskHandle_t)pxCurrentTCB; }
+BaseType_t   xTaskSchedulerRunning(void)     { return xSchedulerRunning; }
+
+const char *pcTaskGetName(TaskHandle_t xTask)
+{
+    const TCB_t *t = (xTask != NULL) ? (const TCB_t *)xTask : (const TCB_t *)pxCurrentTCB;
+    return (t != NULL) ? t->pcTaskName : "boot";
+}
 
 /* Unused stack = painted words still intact, counted up from the low end. */
 static uint32_t prvStackHighWater(const TCB_t *pxTCB)
@@ -464,6 +478,21 @@ static uint32_t prvStackHighWater(const TCB_t *pxTCB)
     }
     return n;
 }
+
+#if defined(configFAULT_INJECTION) && (configFAULT_INJECTION == 1)
+/* Test hook: damage the running task's stack guard words exactly as an
+ * overflow would, then yield so the switch-time check detects it. */
+void vTaskInjectStackOverflow(void)
+{
+    TCB_t *t = (TCB_t *)pxCurrentTCB;
+    if (t != NULL)
+    {
+        t->pxStack[0] = (StackType_t)0U;
+        t->pxStack[1] = (StackType_t)0U;
+    }
+    taskYIELD();
+}
+#endif
 
 UBaseType_t uxTaskGetSnapshot(TaskSnapshot_t *pxArray, UBaseType_t uxMax)
 {

@@ -140,6 +140,27 @@ size_t fm_plat_stats_json(char *buf, size_t cap)
     return jw_len(&w);
 }
 
+/* ---- safety / platform-command stubs for the host harness ---------------- */
+static int s_reboots;
+const char *fm_plat_reset_reason(void) { return "cold boot"; }
+uint32_t    fm_plat_boot_count(void)   { return 1U; }
+size_t fm_plat_crash_json(char *buf, size_t cap)
+{
+    JsonW w;
+    jw_init(&w, buf, cap);
+    jw_obj_open(&w); jw_u32(&w, "boot", 1U); jw_str(&w, "reason", "cold boot"); jw_obj_close(&w);
+    return jw_len(&w);
+}
+bool fm_plat_command(const char *cmd, char *reply, size_t cap)
+{
+    if (strcmp(cmd, "reboot") != 0) { return false; }
+    JsonW w;
+    jw_init(&w, reply, cap);
+    jw_obj_open(&w); jw_str(&w, "cmd", cmd); jw_str(&w, "status", "rebooting"); jw_obj_close(&w);
+    return true;
+}
+void fm_plat_after_reply(void) { s_reboots++; printf("[host] (reboot requested - simulated)\n"); }
+
 int main(int argc, char **argv)
 {
     int      secs = (argc > 1) ? atoi(argv[1]) : 10;

@@ -54,13 +54,27 @@ flint_vectors:
     .balign 4
     .global flint_trap
 flint_trap:
-    /* Gather the fault syndrome and report it once, then halt. Uses the
-     * current SP (valid for the SPx group we run in) to call C. */
+    /* Unhandled exception. Capture the faulting context's FP/LR/SP before
+     * touching anything, move to a dedicated trap stack (the task stack may be
+     * the thing that just overflowed), then hand the syndrome to C, which
+     * records a crash report and resets the board (flint_panic). */
+    mov     x4, x29                   /* frame pointer at the fault */
+    mov     x5, x30                   /* link register at the fault */
+    mov     x6, sp                    /* stack pointer at the fault */
+    ldr     x9, =flint_trap_stack_top
+    mov     sp, x9
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
     mrs     x3, spsr_el1
-    bl      flint_trap_report
+    bl      flint_trap_report         /* does not return */
 flint_trap_halt:
     wfe
     b       flint_trap_halt
+
+    .section .bss
+    .balign 16
+flint_trap_stack:
+    .space  8192
+    .global flint_trap_stack_top
+flint_trap_stack_top:

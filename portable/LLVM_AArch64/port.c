@@ -7,6 +7,8 @@
 #include "task.h"
 #include "rpi4.h"
 #include "uart.h"
+#include "flint_safety.h"
+#include "flint_timing.h"
 
 #include <stdint.h>
 
@@ -44,17 +46,33 @@ StackType_t *pxPortInitialiseStack(StackType_t *pxTopOfStack,
 }
 
 /* --- Unhandled-exception reporter (called from flint_trap in vectors.S) -----
- * Dumps the fault syndrome so an otherwise-silent hang becomes diagnosable.
- * EC (ESR_EL1[31:26]) decodes the cause: 0x25=data abort, 0x21=instr abort,
- * 0x22=PC alignment, 0x26=SP alignment, 0x00=unknown. Then halts. */
-void flint_trap_report(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
+ * Runs on the dedicated trap stack. Decodes the exception class and hands the
+ * CPU state to flint_panic(), which writes the reset-surviving crash record,
+ * prints it and resets the board through the watchdog. */
+static const char *prvExceptionClass(uint64_t ec)
 {
-    uart_printf("\n*** FLINT TRAP: unhandled exception ***\n");
-    uart_printf("  ESR_EL1 =%p  EC=%p\n", (void *)esr, (void *)((esr >> 26) & 0x3FU));
-    uart_printf("  ELR_EL1 =%p  (faulting PC)\n", (void *)elr);
-    uart_printf("  FAR_EL1 =%p  (faulting addr)\n", (void *)far);
-    uart_printf("  SPSR_EL1=%p\n", (void *)spsr);
-    uart_printf("  system halted.\n");
+    switch (ec)
+    {
+        case 0x00U: return "unknown/undefined instruction";
+        case 0x0EU: return "illegal execution state";
+        case 0x15U: return "unexpected SVC";
+        case 0x20U: case 0x21U: return "instruction abort";
+        case 0x22U: return "PC alignment fault";
+        case 0x24U: case 0x25U: return "data abort";
+        case 0x26U: return "SP alignment fault";
+        case 0x2FU: return "SError";
+        case 0x3CU: return "BRK instruction";
+        default:    return "unhandled exception";
+    }
+}
+
+void flint_trap_report(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr,
+                       uint64_t fp, uint64_t lr, uint64_t sp)
+{
+    FlintCpuState cpu;
+    cpu.esr = esr; cpu.elr = elr; cpu.far = far; cpu.spsr = spsr;
+    cpu.fp = fp;   cpu.lr = lr;   cpu.sp = sp;
+    flint_panic(FLINT_RESET_CPU_FAULT, prvExceptionClass((esr >> 26) & 0x3FU), &cpu);
 }
 
 /* --- Nesting-aware critical sections -------------------------------------- */
@@ -90,9 +108,21 @@ static inline uint64_t read_cntfrq(void)
     return v;
 }
 
-static inline void arm_timer(uint64_t ticks)
+/* The tick uses an absolute compare value (CNTP_CVAL) advanced by exactly one
+ * period each time: no drift from handler latency, and (CNTPCT - CVAL) at
+ * handler entry is the true interrupt latency (flint_timing). */
+static uint64_t ullNextCompare = 0U;
+
+static inline uint64_t read_cntpct(void)
 {
-    __asm__ volatile("msr cntp_tval_el0, %0" :: "r"(ticks));
+    uint64_t v;
+    __asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(v) :: "memory");
+    return v;
+}
+
+static inline void set_compare(uint64_t cval)
+{
+    __asm__ volatile("msr cntp_cval_el0, %0" :: "r"(cval));
     __asm__ volatile("msr cntp_ctl_el0, %0" :: "r"((uint64_t)1)); /* enable */
 }
 
@@ -127,7 +157,8 @@ void vPortSetupTimerInterrupt(void)
     mmio_write32(GICC_BASE + 0x004U, GICC_PMR_OPEN); /* GICC_PMR              */
     mmio_write32(GICC_BASE + 0x000U, 1U);            /* GICC_CTLR = Enable    */
 
-    arm_timer(ullTimerReloadTicks);
+    ullNextCompare = read_cntpct() + ullTimerReloadTicks;
+    set_compare(ullNextCompare);
     uart_printf("[port] generic timer armed; waiting for first tick IRQ...\n");
 }
 
@@ -214,7 +245,14 @@ void vPortIrqHandlerC(void)
 
     if (intid == TIMER_IRQ_INTID)
     {
-        arm_timer(ullTimerReloadTicks);              /* reload for next tick  */
+        uint64_t now = read_cntpct();
+        flint_timing_irq_sample(now - ullNextCompare, read_cntfrq());
+        ullNextCompare += ullTimerReloadTicks;       /* next period, no drift */
+        if ((int64_t)(ullNextCompare - now) <= 0)
+        {
+            ullNextCompare = now + ullTimerReloadTicks;   /* fell behind: resync */
+        }
+        set_compare(ullNextCompare);
         xTaskIncrementTick();
         vTaskSwitchContext();                        /* pick next task        */
     }

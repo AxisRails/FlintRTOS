@@ -185,3 +185,53 @@ mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m stats
 Unplug the Ethernet cable: within ~45 s (1.5 x keep-alive) the broker
 publishes the Last Will `{"state":"offline"}` on `flint/<id>/status`. Plug it
 back in and the Pi reconnects on its own (back-off 2 s, doubling to 60 s).
+
+
+---
+
+## Safety: watchdog, crash reports, timing (default image)
+
+Every boot now starts with a reset report, e.g. after a power-on:
+
+```
+[safety] boot #1, previous reset: cold boot  (PM_RSTS=0x00001000)
+...
+[safety] health monitor running: HW watchdog 4000 ms, check every 250 ms
+[bench] 1000 x sem wake-up: min ... ns, mean ... ns, max ... ns
+[bench] 1000 x yield round trip: min ... ns, mean ... ns, max ... ns
+```
+
+Test each recovery path from your PC (`<id>` from the `[mqtt] client id` line):
+
+```sh
+mosquitto_sub -h test.mosquitto.org -t "flint/<id>/#" -v      # keep this open
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m reboot
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "fault abort"
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "fault hang"
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "fault irqoff"
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "fault stack"
+mosquitto_pub -h test.mosquitto.org -t "flint/<id>/cmd" -m "fault oom"
+```
+
+| Command | Expected on the serial console | Next boot reports |
+|---|---|---|
+| `reboot` | `FLINT PANIC: reboot requested` | `reboot requested` |
+| `fault abort` | `FLINT PANIC: CPU fault ... data abort`, ESR/ELR/FAR | `CPU fault` + registers + backtrace |
+| `fault hang` | ~3 s later: `task hung in task 'net': silent 3xxx ms > 3000 ms` | `task hung` |
+| `fault irqoff` | nothing (interrupts are off); ~4 s later the board resets | `watchdog reset`, last task `net` |
+| `fault stack` | `stack overflow in task 'net'` | `stack overflow` |
+| `fault oom` | `out of memory ... pvPortMalloc returned NULL` | `out of memory` |
+
+The same report is published retained on `flint/<id>/crash`, and `status`
+carries `reset_reason` and `boot_count`. Decode a backtrace address with
+`llvm-symbolizer --obj=build/flint.elf 0x...` (use the `flint.elf` from the
+same build as the `kernel8.img` on the card).
+
+If every reset shows `cold boot` and `boot #1`, the Pi firmware cleared the
+record's RAM during the reset - tell me and I'll move it.
+
+`flint/<id>/stats` now includes `irq_latency_ns` (tick-interrupt latency since
+the previous stats message: samples, min, mean, max and a histogram with
+bucket edges 0.5, 1, 2, 5, 10, 50, 100 us, 1, 5 ms) and `ctx_switch_ns`.
+Expect the max latency to be dominated by console output: the UART lock masks
+the scheduler tick for the length of a printed line.

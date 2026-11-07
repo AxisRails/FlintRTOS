@@ -22,6 +22,7 @@ typedef struct
 void   jw_init(JsonW *w, char *buf, size_t cap);
 void   jw_obj_open(JsonW *w);              /* {   (as a value) */
 void   jw_obj_close(JsonW *w);             /* }               */
+void   jw_obj_open_key(JsonW *w, const char *key);  /* "key":{   */
 void   jw_arr_open(JsonW *w, const char *key);   /* "key":[       */
 void   jw_arr_close(JsonW *w);             /* ]               */
 void   jw_str(JsonW *w, const char *key, const char *val);

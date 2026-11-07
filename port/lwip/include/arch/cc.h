@@ -30,9 +30,9 @@
 /* Diagnostics routed to the FlintRTOS UART console. */
 void uart_printf(const char *fmt, ...);
 #define LWIP_PLATFORM_DIAG(x) do { uart_printf x; } while (0)
-#define LWIP_PLATFORM_ASSERT(x) \
-    do { uart_printf("lwIP assert: \"%s\" (%s:%d)\n", (x), __FILE__, __LINE__); \
-         for (;;) { } } while (0)
+/* Assertion -> FlintRTOS fatal path (crash record + watchdog reset). */
+void flint_assert_failed(const char *msg, const char *file, int line);
+#define LWIP_PLATFORM_ASSERT(x) flint_assert_failed((x), __FILE__, __LINE__)
 
 typedef unsigned int sys_prot_t;  /* saved DAIF state (lightweight protection) */
 

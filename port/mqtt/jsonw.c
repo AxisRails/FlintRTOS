@@ -91,6 +91,7 @@ void jw_init(JsonW *w, char *buf, size_t cap)
 
 void jw_obj_open(JsonW *w)  { sep(w); put_c(w, '{'); w->need_comma = false; }
 void jw_obj_close(JsonW *w) { put_c(w, '}'); w->need_comma = true; }
+void jw_obj_open_key(JsonW *w, const char *k) { key(w, k); put_c(w, '{'); w->need_comma = false; }
 void jw_arr_open(JsonW *w, const char *k) { key(w, k); put_c(w, '['); w->need_comma = false; }
 void jw_arr_close(JsonW *w) { put_c(w, ']'); w->need_comma = true; }
 

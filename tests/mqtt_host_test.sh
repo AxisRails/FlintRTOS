@@ -27,7 +27,7 @@ else
 fi
 DEV=$!
 sleep 2
-for c in ping uptime "led on" "led toggle" "led blink" ptp stats help bogus; do
+for c in ping uptime "led on" "led toggle" "led blink" ptp stats help bogus reboot; do
     mosquitto_pub -p "$PORT" -t "flint/$ID/cmd" -m "$c"
     sleep 0.15
 done
@@ -53,6 +53,10 @@ check "led bad arg rejected"     "\"cmd\":\"led blink\",\"error\""          "$DI
 check "help"                     "\"commands\":"                            "$DIR/sub.log"
 check "unknown command"          "\"cmd\":\"bogus\",\"error\""              "$DIR/sub.log"
 check "Last Will -> offline"     "flint/$ID/status {\"state\":\"offline\"}" "$DIR/sub.log"
-check "9 commands handled"       "commands=9"                               "$DIR/dev.log"
+check "reboot command acknowledged" "\"cmd\":\"reboot\",\"status\":\"rebooting\"" "$DIR/sub.log"
+check "deferred action ran after reply" "reboot requested - simulated"      "$DIR/dev.log"
+check "retained crash/reset report" "flint/$ID/crash {\"boot\":1,\"reason\":\"cold boot\"}" "$DIR/sub.log"
+check "status carries reset reason" "\"reset_reason\":\"cold boot\",\"boot_count\":1" "$DIR/sub.log"
+check "10 commands handled"      "commands=10"                              "$DIR/dev.log"
 rm -rf "$DIR"
 exit $fail

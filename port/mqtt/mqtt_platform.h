@@ -28,6 +28,20 @@ int      fm_plat_led(int on);
 size_t   fm_plat_ptp_json(char *buf, size_t cap);
 size_t   fm_plat_stats_json(char *buf, size_t cap);
 
+/* Why the board last reset, and how many boots the reset-surviving record
+   has counted (see flint_safety.h). */
+const char *fm_plat_reset_reason(void);
+uint32_t    fm_plat_boot_count(void);
+
+/* JSON crash/reset report for the retained crash topic (0 = none). */
+size_t   fm_plat_crash_json(char *buf, size_t cap);
+
+/* Platform commands (reboot, bench, fault injection...). Return true if cmd
+   was recognised and fill reply with JSON. Any action that must happen after
+   the reply is on the wire (a reboot) is deferred to fm_plat_after_reply(). */
+bool     fm_plat_command(const char *cmd, char *reply, size_t cap);
+void     fm_plat_after_reply(void);
+
 /* Logging (one line, no trailing newline needed). */
 void     fm_plat_log(const char *line);
 

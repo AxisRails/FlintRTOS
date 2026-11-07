@@ -222,17 +222,46 @@ connection loss. Reconnect after a broker restart was also checked.
 > can read it and send commands (the worst a command can do is toggle the
 > LED). TLS + credentials is the next step (mbedTLS under `transport_raw.c`).
 
+### Safety: watchdog, fault recovery, timing evidence, MISRA gate
+
+| Piece | File | What it does |
+|---|---|---|
+| Hardware watchdog | `bsp/rpi4/pm_watchdog.c` | BCM2711 PM watchdog (password-protected PM_WDOG/PM_RSTC, max ~15 s). Armed at 15 s in `flint_boot()`, tightened to 4 s by the monitor |
+| Health monitor | `kernel/flint_safety.c`, `portable/LLVM_AArch64/safety_port.c` | Tasks register a deadline and check in (`net` 3 s, `hb` 6 s). A top-priority task feeds the watchdog only while all are on time; a late task is named in the crash record, then the board resets |
+| Crash record | `kernel/flint_safety.c` | Reset-surviving RAM at `configSAFETY_NOINIT_ADDR` (0x1FF00000): CRC-protected header + crash (reason, task, tick, ESR/ELR/FAR/SPSR/LR/SP, frame-pointer backtrace, detail), plus the last task switched in, updated on every context switch |
+| Single fatal path | `flint_panic()` | CPU exceptions (on a dedicated trap stack), stack overflow, `pvPortMalloc` failure, lwIP assertions and hung tasks all record and then reboot through the watchdog (`configSAFETY_RESET_ON_FAULT=0` halts instead) |
+| Boot report | `flint_safety_boot()` | Classifies the previous reset (cold boot / watchdog reset / CPU fault / stack overflow / task hung / out of memory / assertion / reboot requested), prints it, publishes it retained on `flint/<id>/crash` |
+| IRQ latency | `kernel/flint_timing.c` | The tick now uses an absolute compare value (CNTP_CVAL, drift-free); handler entry minus CVAL is the true latency. min/mean/max + histogram in every `stats` message |
+| Context switch | `demo/rpi4/bench.c` | Semaphore wake-up of a higher-priority task, and a `taskYIELD` round trip, 1000 runs each, at boot + on `bench` |
+| MISRA gate | `tools/misra/run_misra.sh` | cppcheck MISRA addon over the TCB with a per-rule ratchet (`tools/misra/baseline.txt`, currently 264 findings in 28 rules): any increase fails |
+| CI | `tools/ci.sh`, `.github/workflows/ci.yml` | 3 firmware builds with zero warnings, `ctest` (kernel, safety, PTP sim, MQTT end-to-end incl. lwIP over TAP), MISRA ratchet |
+
+MQTT commands for testing recovery (`configFAULT_INJECTION`, on by default in
+the demo; anyone who can publish to the command topic can use them, so set it
+to 0 for anything deployed): `reboot`, `bench`, `fault abort` (data abort),
+`fault hang` (net task stops checking in), `fault irqoff` (interrupts masked
+forever, only the hardware watchdog can recover), `fault stack` (stack guard
+overwritten), `fault oom` (heap exhausted).
+
+**Verified:** `ctest` `safety_unit` (52 checks: cold/watchdog classification,
+panic round trip, CRC rejection of a corrupted record, backtrace walk, health
+deadlines, latency histogram); the MQTT end-to-end tests now also check the
+reset fields, the retained crash topic and a deferred reboot. **Needs the
+board:** whether the Pi 4 firmware preserves the record's RAM across a
+watchdog reset (if it doesn't, every reset reads as "cold boot"), and the
+actual latency / switch numbers.
+
 Build matrix (all verified to link, zero warnings):
 
 | Build | Image | Contents |
 |---|---|---|
-| `make LWIP=0` | ~18 KB | kernel + scheduler + priority-inversion demo |
-| `make` | ~195 KB | + lwIP NO_SYS + GENET (DHCP, UDP echo) + PTP slave (driver timestamps) + MQTT device client |
-| `make LWIP_OS=1` | ~223 KB | + netconn/sockets + coreMQTT + PTP slave (socket timestamps) |
+| `make LWIP=0` | ~31 KB | kernel + scheduler + priority-inversion demo + safety services |
+| `make` | ~214 KB | + lwIP NO_SYS + GENET (DHCP, UDP echo) + PTP slave + MQTT client + benchmark |
+| `make LWIP_OS=1` | ~234 KB | + netconn/sockets + coreMQTT + PTP slave (socket timestamps) |
 
 **Hardware status:** GENET + lwIP DHCP validated on a Pi 4B (1000BASE-T).
-**Next:** PTP and MQTT validation on hardware; TLS (mbedTLS) under the MQTT
-transport; OS-mode bring-up.
+**Next:** PTP, MQTT and safety validation on hardware; TLS (mbedTLS) under the
+MQTT transport; data cache with DMA maintenance.
 
 ## Other ecosystem libraries (manifest 3 — roadmap)
 

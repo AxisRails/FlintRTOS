@@ -107,3 +107,12 @@ if(MOSQUITTO_BIN AND MOSQUITTO_SUB)
                  COMMAND sh ${CMAKE_SOURCE_DIR}/tests/mqtt_host_test.sh $<TARGET_FILE:mqtt_lwip_test> lwip 18832)
     endif()
 endif()
+
+# --- Safety services: crash record, panic path, health monitor, latency stats
+add_executable(test_safety tests/test_safety.c kernel/flint_safety.c kernel/flint_timing.c)
+target_compile_definitions(test_safety PRIVATE
+    FLINT_SAFETY_HOST_TEST FLINT_TIMING_HOST_TEST _GNU_SOURCE
+    FLINT_SAFETY_RAM_LO=0x10 FLINT_SAFETY_RAM_HI=0x7FFFFFFFFFF0ULL)
+target_compile_options(test_safety PRIVATE -fno-omit-frame-pointer)
+target_include_directories(test_safety PRIVATE ${CMAKE_SOURCE_DIR}/include/FlintRTOS)
+add_test(NAME safety_unit COMMAND test_safety)

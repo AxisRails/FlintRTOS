@@ -14,6 +14,9 @@
 #include "mqtt_platform.h"
 #include "jsonw.h"
 #include "net_demo.h"
+#include "flint_safety.h"
+#include "flint_timing.h"
+#include "bench.h"
 
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
@@ -127,8 +130,189 @@ size_t fm_plat_stats_json(char *buf, size_t cap)
         jw_obj_close(&w);
     }
     jw_arr_close(&w);
+
+    /* Tick-interrupt latency since the previous stats message. */
+    {
+        FlintLatencyStats ls;
+        flint_timing_irq_stats(&ls, true);
+        jw_obj_open_key(&w, "irq_latency_ns");
+        jw_u32(&w, "samples", ls.count);
+        jw_u32(&w, "min", ls.min_ns);
+        jw_u32(&w, "mean", ls.mean_ns);
+        jw_u32(&w, "max", ls.max_ns);
+        jw_arr_open(&w, "hist");                 /* buckets: see "hist_edges_ns" */
+        for (uint32_t i = 0U; i < FLINT_LAT_BUCKETS; i++) { jw_u32(&w, NULL, ls.hist[i]); }
+        jw_arr_close(&w);
+        jw_obj_close(&w);
+    }
+    {
+        const BenchResult *b = bench_result();
+        if (b->valid)
+        {
+            jw_obj_open_key(&w, "ctx_switch_ns");
+            jw_u32(&w, "sem_wake_min",  b->sem_wake.min_ns);
+            jw_u32(&w, "sem_wake_mean", flint_timing_acc_mean(&b->sem_wake));
+            jw_u32(&w, "sem_wake_max",  b->sem_wake.max_ns);
+            jw_u32(&w, "yield_min",  b->yield.min_ns);
+            jw_u32(&w, "yield_mean", flint_timing_acc_mean(&b->yield));
+            jw_u32(&w, "yield_max",  b->yield.max_ns);
+            jw_obj_close(&w);
+        }
+    }
     jw_obj_close(&w);
     return jw_ok(&w) ? jw_len(&w) : 0U;
+}
+
+/* ---- safety reporting ------------------------------------------------------ */
+const char *fm_plat_reset_reason(void)
+{
+    return flint_safety_reason_name(flint_safety_last_reset()->reason);
+}
+
+uint32_t fm_plat_boot_count(void)
+{
+    return flint_safety_last_reset()->boot_count;
+}
+
+size_t fm_plat_crash_json(char *buf, size_t cap)
+{
+    const FlintResetReport *r = flint_safety_last_reset();
+    JsonW w;
+    char  hx[17];
+    char  hx2[19];
+
+    jw_init(&w, buf, cap);
+    jw_obj_open(&w);
+    jw_u32(&w, "boot", r->boot_count);
+    jw_str(&w, "reason", flint_safety_reason_name(r->reason));
+    fm_strlcpy(hx2, "0x", sizeof(hx2));
+    fm_strlcat(hx2, fm_hex64(r->pm_rsts, hx, 8U), sizeof(hx2));
+    jw_str(&w, "pm_rsts", hx2);
+    if (r->have_activity && (r->reason != FLINT_RESET_COLD))
+    {
+        jw_str(&w, "last_task", r->last_task);
+        jw_u32(&w, "last_tick", r->last_tick);
+    }
+    if (r->reason >= FLINT_RESET_CPU_FAULT)
+    {
+        jw_str(&w, "task", r->task);
+        jw_u32(&w, "tick", r->tick);
+        jw_str(&w, "detail", r->detail);
+        if (r->reason == FLINT_RESET_CPU_FAULT)
+        {
+            const uint64_t v[4] = { r->cpu.esr, r->cpu.elr, r->cpu.far, r->cpu.lr };
+            const char *const k[4] = { "esr", "elr", "far", "lr" };
+            for (uint32_t i = 0U; i < 4U; i++)
+            {
+                fm_strlcpy(hx2, "0x", sizeof(hx2));
+                fm_strlcat(hx2, fm_hex64(v[i], hx, 16U), sizeof(hx2));
+                jw_str(&w, k[i], hx2);
+            }
+        }
+        jw_arr_open(&w, "backtrace");
+        for (uint32_t i = 0U; i < r->bt_depth; i++)
+        {
+            fm_strlcpy(hx2, "0x", sizeof(hx2));
+            fm_strlcat(hx2, fm_hex64(r->backtrace[i], hx, 16U), sizeof(hx2));
+            jw_str(&w, NULL, hx2);
+        }
+        jw_arr_close(&w);
+    }
+    jw_obj_close(&w);
+    return jw_ok(&w) ? jw_len(&w) : 0U;
+}
+
+/* ---- platform commands ----------------------------------------------------- */
+typedef enum { ACT_NONE = 0, ACT_REBOOT, ACT_ABORT, ACT_HANG, ACT_IRQOFF, ACT_STACK, ACT_OOM } PendingAction;
+static PendingAction s_action = ACT_NONE;
+
+static bool streq(const char *a, const char *b)
+{
+    while ((*a != '\0') && (*a == *b)) { a++; b++; }
+    return (*a == *b);
+}
+
+static void reply2(char *buf, size_t cap, const char *cmd, const char *k, const char *v)
+{
+    JsonW w;
+    jw_init(&w, buf, cap);
+    jw_obj_open(&w);
+    jw_str(&w, "cmd", cmd);
+    jw_str(&w, k, v);
+    jw_obj_close(&w);
+}
+
+bool fm_plat_command(const char *cmd, char *reply, size_t cap)
+{
+    if (streq(cmd, "bench"))
+    {
+        bench_request();
+        reply2(reply, cap, cmd, "status", "started; results in the next stats message");
+        return true;
+    }
+    if (streq(cmd, "reboot"))
+    {
+        s_action = ACT_REBOOT;
+        reply2(reply, cap, cmd, "status", "rebooting");
+        return true;
+    }
+#if (configFAULT_INJECTION == 1)
+    {
+        static const struct { const char *name; PendingAction act; const char *what; } k_faults[] =
+        {
+            { "fault abort",  ACT_ABORT,  "data abort -> CPU fault record + reset" },
+            { "fault hang",   ACT_HANG,   "net task stops checking in -> health monitor reset" },
+            { "fault irqoff", ACT_IRQOFF, "interrupts off forever -> hardware watchdog reset" },
+            { "fault stack",  ACT_STACK,  "stack guard overwritten -> overflow record + reset" },
+            { "fault oom",    ACT_OOM,    "heap exhausted -> out-of-memory record + reset" },
+        };
+        for (uint32_t i = 0U; i < (sizeof(k_faults) / sizeof(k_faults[0])); i++)
+        {
+            if (streq(cmd, k_faults[i].name))
+            {
+                s_action = k_faults[i].act;
+                reply2(reply, cap, cmd, "injecting", k_faults[i].what);
+                return true;
+            }
+        }
+    }
+#endif
+    return false;
+}
+
+void fm_plat_after_reply(void)
+{
+    PendingAction a = s_action;
+    s_action = ACT_NONE;
+    switch (a)
+    {
+        case ACT_REBOOT:
+            flint_panic(FLINT_RESET_REQUESTED, "reboot command (MQTT)", NULL);
+            break;
+#if (configFAULT_INJECTION == 1)
+        case ACT_ABORT:
+            uart_printf("[fault] reading unmapped address 0x100000000\n");
+            (void)*(volatile uint32_t *)(uintptr_t)0x100000000ULL;
+            break;
+        case ACT_HANG:
+            uart_printf("[fault] net task spinning with interrupts on\n");
+            for (;;) { __asm__ volatile("nop"); }
+        case ACT_IRQOFF:
+            uart_printf("[fault] interrupts masked, spinning\n");
+            __asm__ volatile("msr daifset, #3" ::: "memory");
+            for (;;) { __asm__ volatile("nop"); }
+        case ACT_STACK:
+            uart_printf("[fault] corrupting the stack guard\n");
+            vTaskInjectStackOverflow();
+            break;
+        case ACT_OOM:
+            uart_printf("[fault] allocating until the heap is exhausted\n");
+            for (;;) { (void)pvPortMalloc(64U * 1024U); }
+#endif
+        case ACT_NONE:
+        default:
+            break;
+    }
 }
 
 #endif

@@ -30,6 +30,7 @@
 #include "flint_netif.h"
 #include "genet.h"
 #include "net_demo.h"
+#include "flint_safety.h"
 #if (configUSE_PTP == 1)
 #include "ptp_lwip_raw.h"
 #endif
@@ -44,6 +45,7 @@ static bool     s_bound;
 static bool     s_link_up;
 static uint32_t s_last_link_ms;
 static uint32_t s_last_report_ms;
+static int      s_health = -1;     /* health-monitor handle for this task */
 
 struct netif *net_demo_netif(void) { return &s_netif; }
 bool          net_demo_bound(void) { return s_bound; }
@@ -139,6 +141,7 @@ void net_pump(bool idle)
 {
     uint32_t now;
 
+    flint_health_checkin(s_health);   /* also runs inside blocking MQTT waits */
     flint_netif_poll(&s_netif);   /* drain RX -> lwIP (callbacks run here) */
     sys_check_timeouts();         /* DHCP, ARP, TCP, DNS, IGMP timers      */
     now = (uint32_t)xTaskGetTickCount();
@@ -199,6 +202,9 @@ void vNetworkTask(void *pvParameters)
     genet_diag();
     genet_probe();
     s_last_report_ms = (uint32_t)xTaskGetTickCount();
+    /* Monitored from here on (after PHY/MAC bring-up, which may be slow):
+       net_pump() must run at least every 3 s, including inside MQTT waits. */
+    s_health = flint_health_register("net", 3000U);
 
     for (;;)
     {
